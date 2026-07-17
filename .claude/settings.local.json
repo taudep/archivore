@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import lz4; print\\('lz4 ok'\\)\")",
+      "Bash(osascript *)",
+      "Bash(sqlite3 *)",
+      "Bash(python3 *)",
+      "Bash(pip3 install *)"
+    ]
+  }
+}
