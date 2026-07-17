@@ -1,0 +1,275 @@
+"""Weekly digest command: queue HN/Reddit/X reads, resolve metadata,
+download articles concurrently, and write the index.
+
+Phase 1 resolves metadata sequentially (rate-limit friendly); phase 2
+downloads link-post articles concurrently with a Rich live table.
+"""
+
+import asyncio
+import shutil
+import sqlite3
+import subprocess
+import time
+
+import aiohttp
+from rich import box
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+
+from archivore.clients import fetcher, hn, reddit, x
+from archivore.clients.browsers import get_all_history
+from archivore.config import Config
+from archivore.models import ResolvedItem
+from archivore.render import write_article_file, write_index
+from archivore.repository import queue
+from archivore.sources import (
+    extract_hn_items,
+    extract_reddit_items,
+    extract_x_items,
+)
+
+console = Console()
+
+
+def sync_all_sources(conn: sqlite3.Connection, cfg: Config, now: str) -> int:
+    """Scan browser history once and queue new items from every source."""
+    history = get_all_history(days=cfg.digest_days)
+    new = 0
+
+    hn_items = extract_hn_items(history)
+    console.print(f"  HN:     [cyan]{len(hn_items)}[/cyan] item(s)")
+    for item_id in hn_items:
+        comments_url = f"https://news.ycombinator.com/item?id={item_id}"
+        new += queue.insert(conn, item_id, "hn", comments_url, now)
+
+    reddit_items = extract_reddit_items(history)
+    console.print(f"  Reddit: [cyan]{len(reddit_items)}[/cyan] item(s)")
+    for post_id, orig_url in reddit_items.items():
+        # Original URL goes in comments_url so phase 1 can rebuild old.reddit
+        new += queue.insert(conn, post_id, "reddit", orig_url, now)
+
+    x_items = extract_x_items(history)
+    console.print(f"  X:      [cyan]{len(x_items)}[/cyan] item(s)")
+    for xid, (kind, orig_url) in x_items.items():
+        # kind|orig_url goes in article_url until phase 1 resolves it; the x_
+        # prefix keeps numeric tweet IDs from colliding with HN item IDs
+        new += queue.insert(
+            conn,
+            f"x_{xid}",
+            "x",
+            orig_url,
+            now,
+            article_url=f"{kind}|{orig_url}",
+        )
+
+    conn.commit()
+    return new
+
+
+def _resolve_one(row: sqlite3.Row, cfg: Config) -> ResolvedItem | None:
+    """Dispatch one queue row to its source client, honoring rate delays."""
+    source = row["source"]
+    if source == "hn":
+        result = hn.resolve(row["item_id"])
+        time.sleep(cfg.hn_delay)
+    elif source == "reddit":
+        result = reddit.resolve(row["item_id"], row["comments_url"])
+        time.sleep(cfg.meta_delay)
+    elif source == "x":
+        stored = row["article_url"]
+        kind, orig_url = (
+            stored.split("|", 1) if stored else ("tweet", row["comments_url"])
+        )
+        result = x.resolve(row["item_id"].removeprefix("x_"), kind, orig_url)
+        time.sleep(cfg.meta_delay)
+    else:
+        result = None
+    return result
+
+
+def phase1_resolve(conn: sqlite3.Connection, cfg: Config, now: str) -> None:
+    """Resolve metadata for every queued item that still lacks a title."""
+    rows = queue.unresolved(conn)
+    if not rows:
+        return
+
+    console.print(f"\n[bold]Phase 1[/bold] — resolving {len(rows)} item(s)…")
+
+    for row in rows:
+        item_id = row["item_id"]
+        console.print(f"  [{row['source']}:{item_id}] ", end="")
+        try:
+            item = _resolve_one(row, cfg)
+            if item is None or not item.title:
+                reason = (
+                    "no title"
+                    if item is not None
+                    else f"unknown source '{row['source']}'"
+                )
+                console.print(f"[yellow]{reason}, skipping[/yellow]")
+                queue.mark(conn, item_id, "skipped", now, last_error=reason)
+                continue
+
+            console.print(item.title[:70])
+
+            if item.is_selfpost and item.selftext is not None:
+                # Write the file now; no phase-2 fetch needed
+                filename = write_article_file(
+                    cfg.output_dir,
+                    item_id,
+                    item.title,
+                    item.article_url,
+                    row["comments_url"],
+                    item.selftext,
+                    "",
+                )
+                queue.mark(
+                    conn,
+                    item_id,
+                    "done",
+                    now,
+                    title=item.title,
+                    article_url=item.article_url,
+                    is_selfpost=1,
+                    filename=filename,
+                )
+            else:
+                queue.set_metadata(
+                    conn,
+                    item_id,
+                    item.title,
+                    item.article_url,
+                    item.is_selfpost,
+                    now,
+                )
+        except Exception as e:
+            console.print(f"[red]error: {e}[/red]")
+            queue.mark(conn, item_id, "failed", now, last_error=str(e))
+
+
+def _build_table(state: fetcher.StateMap, rows_by_id: dict) -> Table:
+    table = Table(
+        box=box.SIMPLE,
+        show_header=True,
+        header_style="bold cyan",
+        expand=True,
+        min_width=80,
+    )
+    table.add_column("", width=2, no_wrap=True)
+    table.add_column("Source", width=8, no_wrap=True)
+    table.add_column("Title", ratio=3)
+    table.add_column("Status", ratio=2)
+    color_map = {
+        "✅": "green",
+        "❌": "red",
+        "⛔": "yellow",
+        "⏳": "cyan",
+        "🔄": "blue",
+        "⚠": "yellow",
+    }
+    for item_id, (icon, status) in state.items():
+        r = rows_by_id.get(item_id, {})
+        title = (r.get("title") or "")[:50]
+        color = color_map.get(icon, "white")
+        table.add_row(icon, r.get("source", ""), title, f"[{color}]{status}[/]")
+    return table
+
+
+async def phase2_download(conn: sqlite3.Connection, cfg: Config, now: str) -> None:
+    """Download all pending link-post articles concurrently."""
+    rows = queue.downloadable(conn, cfg.max_retries)
+    if not rows:
+        console.print("\n[green]Nothing to download in phase 2.[/green]")
+        return
+
+    rows_by_id = {r["item_id"]: dict(r) for r in rows}
+    state: fetcher.StateMap = {r["item_id"]: ("⏸", "queued") for r in rows}
+    db_lock = asyncio.Lock()
+
+    console.print(
+        f"\n[bold]Phase 2[/bold] — downloading {len(rows)} article(s) "
+        f"({cfg.concurrency} concurrent)…\n"
+    )
+
+    connector = aiohttp.TCPConnector(limit=cfg.concurrency, ssl=False)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        sem = asyncio.Semaphore(cfg.concurrency)
+
+        async def bounded(row: sqlite3.Row) -> None:
+            async with sem:
+                await fetcher.fetch_article(
+                    session,
+                    row,
+                    state,
+                    db_lock,
+                    conn,
+                    now,
+                    cfg.output_dir,
+                    cfg.max_retries,
+                )
+
+        with Live(
+            _build_table(state, rows_by_id),
+            refresh_per_second=4,
+            console=console,
+        ) as live:
+            tasks = [asyncio.create_task(bounded(r)) for r in rows]
+            while not all(t.done() for t in tasks):
+                live.update(_build_table(state, rows_by_id))
+                await asyncio.sleep(0.25)
+            await asyncio.gather(*tasks)
+            live.update(_build_table(state, rows_by_id))
+
+
+def run_qmd_embed() -> None:
+    """Refresh the qmd semantic index if qmd is installed."""
+    qmd = shutil.which("qmd")
+    if not qmd:
+        console.print("[yellow]qmd not found in PATH — skipping embed[/yellow]")
+        return
+    console.print("\n[bold]Updating qmd index…[/bold]")
+    result = subprocess.run([qmd, "embed"], capture_output=True, text=True)
+    if result.returncode == 0:
+        summary = next(
+            (ln for ln in reversed(result.stdout.splitlines()) if ln.strip()),
+            "qmd embed complete",
+        )
+        console.print(f"[green]{summary}[/green]")
+    else:
+        console.print(f"[yellow]qmd embed exited {result.returncode}[/yellow]")
+        if result.stderr:
+            console.print(result.stderr[:300])
+
+
+def run(cfg: Config, skip_embed: bool = False) -> None:
+    """Execute the full weekly-digest pipeline."""
+    from datetime import datetime, timezone
+
+    cfg.output_dir.mkdir(exist_ok=True)
+    conn = queue.open_queue(cfg.output_dir / "queue.db")
+    now = datetime.now(timezone.utc).isoformat()
+
+    console.print(
+        f"[bold]Scanning browser history[/bold] (last {cfg.digest_days} days)…"
+    )
+    new = sync_all_sources(conn, cfg, now)
+    console.print(f"Queued [cyan]{new}[/cyan] new item(s)\n")
+
+    phase1_resolve(conn, cfg, now)
+    asyncio.run(phase2_download(conn, cfg, now))
+
+    index_path, n = write_index(cfg.output_dir, queue.index_rows(conn), cfg.digest_days)
+
+    done, skipped, failed, retryable = queue.status_counts(conn, cfg.max_retries)
+    console.print(
+        f"\n[bold green]Done[/bold green] — "
+        f"{done} saved, {skipped} skipped, {failed} failed"
+    )
+    if retryable:
+        console.print(f"[yellow]{retryable} item(s) retryable — run again[/yellow]")
+    console.print(f"Index: [cyan]{index_path}[/cyan]  ({n} articles)")
+
+    if not skip_embed:
+        run_qmd_embed()
+    conn.close()

@@ -8,7 +8,21 @@ Everything you read online gets captured, converted to Markdown, and fed into a 
 
 ## What's built
 
-### Browser harvester (`main.py`)
+A `click`-based CLI (`archivore`) with two commands, structured as a `uv`-managed package:
+
+```
+archivore/
+  cli.py           — click entry point (archivore snapshot / archivore weekly)
+  config.py        — XDG-style config (defaults ← ~/.config/archivore/config.yaml ← ./archivore.yaml)
+  sources.py       — pure history transforms: per-source extraction, domain dedup
+  render.py        — all Markdown output
+  commands/        — snapshot + weekly orchestration
+  clients/         — browser readers, HN/Reddit/X resolvers, async fetcher
+  repository/      — SQLite access (snapshot DB + download queue)
+tests/             — pytest suite for the pure transforms
+```
+
+### `archivore snapshot`
 
 Snapshots your open tabs and 90 days of browser history (Chrome + Firefox) into SQLite, then optionally exports a deduplicated Markdown digest. Domain-level deduplication surfaces the most-visited URL per domain and filters noise sites (Gmail, Amazon, Facebook).
 
@@ -17,11 +31,9 @@ Snapshots your open tabs and 90 days of browser history (Chrome + Firefox) into 
 ~/tabs.md          — optional Markdown export
 ```
 
-Flags: `--markdown [FILE]`, `--days N`, `--db FILE`, `--no-db`
+### `archivore weekly`
 
-### Weekly reading digest (`this_week.py`)
-
-Scans browser history for the past 7 days, pulls out HN, Reddit, and X URLs, fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. A SQLite queue makes runs resumable — already-fetched articles are skipped.
+Scans browser history for the past 7 days, pulls out HN, Reddit, and X URLs, fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. A SQLite queue makes runs resumable, and the qmd semantic index is refreshed automatically after each run.
 
 ```
 hn_this_week/
@@ -33,28 +45,43 @@ hn_this_week/
 ## Setup
 
 ```bash
-pip install aiohttp rich html2text
-pip install lz4   # optional — Firefox tab/session support
+uv sync --extra firefox    # firefox extra adds lz4 session decoding
+```
+
+For semantic search over captured articles, install [qmd](https://github.com/tobi/qmd):
+
+```bash
+npm install -g @tobilu/qmd
+qmd collection add ./hn_this_week --name archivore
+qmd embed
 ```
 
 ## Usage
 
 ```bash
 # Snapshot current tabs + 90-day history → ~/tabs.db and ~/tabs.md
-python3 main.py --markdown
+uv run archivore snapshot --markdown ~/tabs.md
 
 # Fetch this week's reading (HN, Reddit, X) → hn_this_week/
-python3 this_week.py
+uv run archivore weekly
+
+# Search the knowledge base
+qmd query "postgres performance"
 ```
+
+Defaults can be overridden in `~/.config/archivore/config.yaml` or a local `archivore.yaml` (keys match the `Config` dataclass: `history_days`, `ignore_domains`, `output_dir`, `concurrency`, …).
+
+To install the CLI on your PATH: `uv tool install .`
 
 ## Roadmap
 
 ### Phase 2 — Knowledge Base
 
+- [x] Vector embeddings index for semantic search across all captured articles (via [qmd](https://github.com/tobi/qmd))
+- [x] CLI to query the knowledge base by keyword or topic (`qmd search` / `qmd query`)
+- [x] Auto-refresh the index after each weekly run
 - [ ] Topic-based wiki directory structure (auto-organize articles by tag/domain)
-- [ ] Vector embeddings index for semantic search across all captured articles
 - [ ] Auto-link related articles during ingestion
-- [ ] CLI to query the knowledge base by keyword or topic
 
 ### Phase 3 — AI Content Generation (Claude API)
 
@@ -83,13 +110,13 @@ python3 this_week.py
 browser history
      │
      ▼
-main.py ──────────────────► ~/tabs.db  (tabs + domain history)
+archivore snapshot ────────► ~/tabs.db  (tabs + domain history)
      │
      ▼
-this_week.py ─────────────► hn_this_week/  (per-article .md + index)
+archivore weekly ──────────► hn_this_week/  (per-article .md + index)
      │
      ▼
-[Phase 2] knowledge base ──► wiki/  (tagged, linked, searchable)
+qmd (BM25 + vectors) ──────► semantic search over everything captured
      │
      ▼
 [Phase 3] Claude agent ────► drafts/  (articles + social posts)
@@ -100,9 +127,12 @@ this_week.py ─────────────► hn_this_week/  (per-arti
 
 ## Dependencies
 
-| Package      | Used by         | Purpose                                      |
-|--------------|-----------------|----------------------------------------------|
-| `aiohttp`    | `this_week.py`  | Concurrent async article downloads           |
-| `rich`       | `this_week.py`  | Live TUI progress display                    |
-| `html2text`  | `this_week.py`  | HTML → Markdown conversion                   |
-| `lz4`        | `main.py`       | Firefox `.jsonlz4` session decoding (optional)|
+| Package     | Purpose                                        |
+|-------------|------------------------------------------------|
+| `click`     | CLI commands and argument parsing              |
+| `requests`  | Synchronous HTTP (metadata resolution)         |
+| `aiohttp`   | Concurrent async article downloads             |
+| `rich`      | Live TUI progress display                      |
+| `html2text` | HTML → Markdown conversion                     |
+| `pyyaml`    | Config file parsing                            |
+| `lz4`       | Firefox `.jsonlz4` session decoding (optional) |
