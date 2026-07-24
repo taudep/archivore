@@ -1,4 +1,4 @@
-"""The resumable download queue backing the weekly digest."""
+"""The resumable download queue backing the reading digest."""
 
 import sqlite3
 from pathlib import Path
@@ -114,6 +114,16 @@ def index_rows(conn: sqlite3.Connection) -> list[dict]:
         "ORDER BY source, item_id DESC"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def done_this_run(conn: sqlite3.Connection, now: str) -> list[sqlite3.Row]:
+    """Items marked done in this run's pass, matched by the shared `now`
+    timestamp every write in a run shares."""
+    return conn.execute(
+        "SELECT source, title, article_url FROM queue "
+        "WHERE status = 'done' AND updated_at = ? ORDER BY source",
+        (now,),
+    ).fetchall()
 
 
 def status_counts(

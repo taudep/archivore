@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from archivore.models import HistoryRow, Tab
@@ -187,13 +187,10 @@ def _chrome_history_paths() -> Iterator[Path]:
                 yield history
 
 
-def get_chrome_history(days: int = 90) -> list[HistoryRow]:
-    """Return Chrome history rows newer than ``days``, merged across profiles."""
-    cutoff_us = (
-        _CHROME_EPOCH_DELTA_US
-        + int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
-        * 1_000_000
-    )
+def get_chrome_history(since: datetime) -> list[HistoryRow]:
+    """Return Chrome history rows visited at or after ``since``, merged
+    across profiles."""
+    cutoff_us = _CHROME_EPOCH_DELTA_US + int(since.timestamp()) * 1_000_000
 
     rows: list[HistoryRow] = []
     for history_path in _chrome_history_paths():
@@ -234,15 +231,14 @@ def get_chrome_history(days: int = 90) -> list[HistoryRow]:
     return list(merged.values())
 
 
-def get_firefox_history(days: int = 90) -> list[HistoryRow]:
-    """Return Firefox history rows newer than ``days`` across all profiles."""
+def get_firefox_history(since: datetime) -> list[HistoryRow]:
+    """Return Firefox history rows visited at or after ``since``, across all
+    profiles."""
     profiles_dir = _firefox_profiles_dir()
     if profiles_dir is None:
         return []
 
-    cutoff_us = int(
-        (datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1_000_000
-    )
+    cutoff_us = int(since.timestamp() * 1_000_000)
 
     rows: list[HistoryRow] = []
     for db_path in profiles_dir.glob("*/places.sqlite"):
@@ -283,6 +279,6 @@ def get_firefox_history(days: int = 90) -> list[HistoryRow]:
     return rows
 
 
-def get_all_history(days: int = 90) -> list[HistoryRow]:
-    """Return combined Chrome + Firefox history for the last ``days``."""
-    return get_chrome_history(days=days) + get_firefox_history(days=days)
+def get_all_history(since: datetime) -> list[HistoryRow]:
+    """Return combined Chrome + Firefox history visited at or after ``since``."""
+    return get_chrome_history(since) + get_firefox_history(since)

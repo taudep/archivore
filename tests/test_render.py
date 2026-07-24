@@ -1,5 +1,7 @@
 """Tests for Markdown rendering helpers."""
 
+from datetime import datetime, timedelta, timezone
+
 from archivore.render import (
     html_to_markdown,
     md_escape,
@@ -61,7 +63,9 @@ def test_write_index_groups_by_source(tmp_path):
             "is_selfpost": 1,
         },
     ]
-    index_path, n = write_index(tmp_path, rows, days=7)
+    until = datetime.now(timezone.utc)
+    since = until - timedelta(days=7)
+    index_path, n = write_index(tmp_path, rows, since, until)
     content = index_path.read_text()
     assert n == 2
     assert "## Hacker News (1)" in content

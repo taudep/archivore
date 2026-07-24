@@ -15,6 +15,7 @@ from archivore.config import Config
 from archivore.render import write_snapshot_markdown
 from archivore.repository.snapshot import save_snapshot
 from archivore.sources import dedupe_by_domain
+from archivore.timeutil import days_ago
 
 
 def run(
@@ -32,12 +33,13 @@ def run(
     firefox_tabs = get_firefox_tabs()
     click.echo(f"  {len(firefox_tabs)} tab(s) found")
 
+    since = days_ago(days)
     click.echo(f"\nChrome history (last {days} days):")
-    chrome_history = get_chrome_history(days=days)
+    chrome_history = get_chrome_history(since)
     click.echo(f"  {len(chrome_history)} URL(s) found")
 
     click.echo(f"Firefox history (last {days} days):")
-    firefox_history = get_firefox_history(days=days)
+    firefox_history = get_firefox_history(since)
     click.echo(f"  {len(firefox_history)} URL(s) found")
 
     n_raw_urls = len(chrome_history) + len(firefox_history)
@@ -49,7 +51,7 @@ def run(
         md_limit = len(deduped)
     else:
         click.echo("\nComputing 7-day domain count for markdown limit...")
-        recent = get_all_history(days=7)
+        recent = get_all_history(days_ago(7))
         md_limit = len(dedupe_by_domain(recent, cfg.ignore_domains))
         click.echo(f"  {md_limit} domains in last 7 days")
 

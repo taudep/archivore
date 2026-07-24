@@ -59,22 +59,30 @@ def snapshot(cfg, db_path, no_db, markdown_path, days) -> None:
 @cli.command()
 @click.option(
     "--days",
+    "days_override",
     type=int,
     default=None,
     metavar="N",
-    help="Days of history to scan (default: 7).",
+    help=(
+        "Scan a fixed window of N days, ignoring the saved watermark "
+        "(default: since the last run, or 7 days on first run)."
+    ),
 )
 @click.option(
     "--skip-embed", is_flag=True, help="Skip the qmd index update at the end."
 )
 @click.pass_obj
-def weekly(cfg, days, skip_embed) -> None:
-    """Fetch this week's HN/Reddit/X reading as Markdown with an index."""
-    from archivore.commands import weekly as cmd
+def run(cfg, days_override, skip_embed) -> None:
+    """Fetch reading since the last run (HN/Reddit/X) as Markdown + index.
 
-    if days:
-        cfg.digest_days = days
-    cmd.run(cfg, skip_embed=skip_embed)
+    Scans since the saved watermark rather than a fixed schedule, appends a
+    summary to the run log, and — if configured — sends a macOS notification
+    and/or email. Both are inert until configured, so this is safe to run
+    interactively or from cron without any extra setup.
+    """
+    from archivore.commands import run as cmd
+
+    cmd.run(cfg, days_override=days_override, skip_embed=skip_embed)
 
 
 if __name__ == "__main__":

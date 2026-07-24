@@ -12,11 +12,11 @@ A `click`-based CLI (`archivore`) with two commands, structured as a `uv`-manage
 
 ```
 archivore/
-  cli.py           — click entry point (archivore snapshot / archivore weekly)
+  cli.py           — click entry point (archivore snapshot / run)
   config.py        — XDG-style config (defaults ← ~/.config/archivore/config.yaml ← ./archivore.yaml)
   sources.py       — pure history transforms: per-source extraction, domain dedup
   render.py        — all Markdown output
-  commands/        — snapshot + weekly orchestration
+  commands/        — snapshot + run (fetch pipeline + logging/notifications) orchestration
   clients/         — browser readers, HN/Reddit/X resolvers, async fetcher
   repository/      — SQLite access (snapshot DB + download queue)
 tests/             — pytest suite for the pure transforms
@@ -31,16 +31,23 @@ Snapshots your open tabs and 90 days of browser history (Chrome + Firefox) into 
 ~/tabs.md          — optional Markdown export
 ```
 
-### `archivore weekly`
+### `archivore run`
 
-Scans browser history for the past 7 days, pulls out HN, Reddit, and X URLs, fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. A SQLite queue makes runs resumable, and the qmd semantic index is refreshed automatically after each run.
+Scans browser history since the last successful run (tracked in the user config, not a fixed schedule), pulls out HN, Reddit, and X URLs, fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. A SQLite queue makes runs resumable, and the qmd semantic index is refreshed automatically after each run.
+
+It also appends a summary (counts + newly-saved titles) to a log file every time, and can send
+a native macOS notification and/or an email when it finishes — both inert until configured, so
+it's equally safe to run by hand or schedule from cron.
 
 ```
 hn_this_week/
   index.md         — linked table of contents (HN / Reddit / X sections)
   *.md             — one file per article
   queue.db         — resumable download queue
+~/Library/Logs/archivore/run.log   — append-only summary of every run (default; see log_path)
 ```
+
+See [Automation (cron)](#automation-cron) below for scheduling and notification setup.
 
 ## Setup
 
@@ -62,8 +69,8 @@ qmd embed
 # Snapshot current tabs + 90-day history → ~/tabs.db and ~/tabs.md
 uv run archivore snapshot --markdown ~/tabs.md
 
-# Fetch this week's reading (HN, Reddit, X) → hn_this_week/
-uv run archivore weekly
+# Fetch reading since the last run (HN, Reddit, X) → hn_this_week/
+uv run archivore run
 
 # Search the knowledge base
 qmd query "postgres performance"
@@ -73,13 +80,47 @@ Defaults can be overridden in `~/.config/archivore/config.yaml` or a local `arch
 
 To install the CLI on your PATH: `uv tool install .`
 
+## Automation (cron)
+
+`archivore run` is safe to schedule as often as you like — it only processes what's new since the
+last invocation. A typical crontab entry, running every morning at 8am:
+
+```cron
+0 8 * * * cd /path/to/archivore && /path/to/uv run archivore run >> ~/Library/Logs/archivore/cron.log 2>&1
+```
+
+The redirect is optional — `archivore run` keeps its own summary log at `log_path` regardless
+(default `~/Library/Logs/archivore/run.log`) — but it's a useful safety net for a stack trace if
+the pipeline itself fails before it gets a chance to log.
+
+Notifications are config-driven, in `~/.config/archivore/config.yaml`:
+
+```yaml
+# macOS notification banner with the run's counts (on by default; needs osascript, i.e. macOS)
+notify_macos: true
+
+# Optional email summary — sent only when smtp_host and email_to are both set
+smtp_host: smtp.gmail.com
+smtp_port: 587
+smtp_user: you@gmail.com
+smtp_password: "an app password, not your account password"
+email_to: you@gmail.com
+email_from: you@gmail.com   # defaults to smtp_user
+
+# Where the run log is written
+log_path: ~/Library/Logs/archivore/run.log
+```
+
+Since `smtp_password` is a credential, restrict the config file's permissions:
+`chmod 600 ~/.config/archivore/config.yaml`.
+
 ## Roadmap
 
 ### Phase 2 — Knowledge Base
 
 - [x] Vector embeddings index for semantic search across all captured articles (via [qmd](https://github.com/tobi/qmd))
 - [x] CLI to query the knowledge base by keyword or topic (`qmd search` / `qmd query`)
-- [x] Auto-refresh the index after each weekly run
+- [x] Auto-refresh the index after each run
 - [ ] Topic-based wiki directory structure (auto-organize articles by tag/domain)
 - [ ] Auto-link related articles during ingestion
 
@@ -113,7 +154,7 @@ browser history
 archivore snapshot ────────► ~/tabs.db  (tabs + domain history)
      │
      ▼
-archivore weekly ──────────► hn_this_week/  (per-article .md + index)
+archivore run ─────────────► hn_this_week/  (per-article .md + index)
      │
      ▼
 qmd (BM25 + vectors) ──────► semantic search over everything captured

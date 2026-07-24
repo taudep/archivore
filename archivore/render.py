@@ -1,7 +1,7 @@
 """All Markdown output: HTML conversion, article files, snapshot, and index."""
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 
@@ -125,14 +125,15 @@ def write_snapshot_markdown(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def write_index(output_dir: Path, rows: list[dict], days: int) -> tuple[Path, int]:
-    """Write the weekly-digest index and return its path and article count.
+def write_index(
+    output_dir: Path, rows: list[dict], since: datetime, until: datetime
+) -> tuple[Path, int]:
+    """Write the reading-digest index and return its path and article count.
 
     ``rows`` need keys: source, title, filename, comments_url, is_selfpost.
     """
-    now = datetime.now(timezone.utc)
-    since = (now - timedelta(days=days)).strftime("%Y-%m-%d")
-    until = now.strftime("%Y-%m-%d")
+    since_str = since.strftime("%Y-%m-%d")
+    until_str = until.strftime("%Y-%m-%d")
 
     by_source: dict[str, list[dict]] = {}
     for r in rows:
@@ -141,7 +142,7 @@ def write_index(output_dir: Path, rows: list[dict], days: int) -> tuple[Path, in
     lines = [
         "# Articles Read This Week",
         "",
-        f"_{since} – {until} · {len(rows)} article(s)_",
+        f"_{since_str} – {until_str} · {len(rows)} article(s)_",
         "",
     ]
 

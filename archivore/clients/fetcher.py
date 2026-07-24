@@ -1,4 +1,4 @@
-"""Async article downloader used by phase 2 of the weekly digest."""
+"""Async article downloader used by phase 2 of the reading digest."""
 
 import asyncio
 import sqlite3

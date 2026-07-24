@@ -18,7 +18,7 @@ DEFAULT_IGNORE_DOMAINS = {
     "facebook.com",
 }
 
-_PATH_FIELDS = {"db_path", "md_path", "output_dir"}
+_PATH_FIELDS = {"db_path", "md_path", "output_dir", "log_path"}
 
 
 @dataclass
@@ -37,12 +37,29 @@ class Config:
     meta_delay: float = 1.5
     max_retries: int = 4
     concurrency: int = 5
+    last_run: str | None = None
+    log_path: Path = field(
+        default_factory=lambda: Path.home() / "Library/Logs/archivore/run.log"
+    )
+    notify_macos: bool = True
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    email_to: str | None = None
+    email_from: str | None = None
+
+
+def xdg_config_path() -> Path:
+    """Path to the user-level config file — where ``last_run`` is persisted,
+    since it must survive regardless of the working directory."""
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    return xdg / "archivore" / "config.yaml"
 
 
 def config_files() -> list[Path]:
     """Return candidate config paths, lowest precedence first."""
-    xdg = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
-    return [xdg / "archivore" / "config.yaml", Path("archivore.yaml")]
+    return [xdg_config_path(), Path("archivore.yaml")]
 
 
 def load_config() -> Config:
@@ -62,3 +79,15 @@ def load_config() -> Config:
                 value = set(value)
             setattr(cfg, f.name, value)
     return cfg
+
+
+def save_last_run(timestamp: str) -> None:
+    """Persist the watermark timestamp into the user-level config file,
+    preserving any other keys already there."""
+    path = xdg_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    if path.is_file():
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data["last_run"] = timestamp
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
