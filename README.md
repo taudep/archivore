@@ -35,6 +35,8 @@ Snapshots your open tabs and 90 days of browser history (Chrome + Firefox) into 
 
 Scans browser history since the last successful run (tracked in the user config, not a fixed schedule), pulls out HN, Reddit, and X URLs, fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. A SQLite queue makes runs resumable, and the qmd semantic index is refreshed automatically after each run.
 
+Reddit posts are filtered by subreddit — only `reddit_subreddits` (in the config, case-insensitive) get ingested, so browsing off-topic subreddits doesn't pollute the knowledge base. Set it to an empty list to disable the filter.
+
 It also appends a summary (counts + newly-saved titles) to a log file every time, and can send
 a native macOS notification and/or an email when it finishes — both inert until configured, so
 it's equally safe to run by hand or schedule from cron.
@@ -76,7 +78,18 @@ uv run archivore run
 qmd query "postgres performance"
 ```
 
-Defaults can be overridden in `~/.config/archivore/config.yaml` or a local `archivore.yaml` (keys match the `Config` dataclass: `history_days`, `ignore_domains`, `output_dir`, `concurrency`, …).
+Defaults can be overridden in `~/.config/archivore/config.yaml` or a local `archivore.yaml` (keys match the `Config` dataclass: `history_days`, `ignore_domains`, `reddit_subreddits`, `output_dir`, `concurrency`, …). For example, to change the Reddit allowlist:
+
+```yaml
+reddit_subreddits:
+  - localllm
+  - LocalLLaMA
+  - DoomEmacs
+  - snowflake
+  - git
+  - dotfiles
+  - dotnet
+```
 
 To install the CLI on your PATH: `uv tool install .`
 
