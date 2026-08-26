@@ -56,7 +56,7 @@ def sync_all_sources(
         comments_url = f"https://news.ycombinator.com/item?id={item_id}"
         new += queue.insert(conn, item_id, "hn", comments_url, now)
 
-    reddit_items = extract_reddit_items(history)
+    reddit_items = extract_reddit_items(history, cfg.reddit_subreddits)
     console.print(f"  Reddit: [cyan]{len(reddit_items)}[/cyan] item(s)")
     for post_id, orig_url in reddit_items.items():
         # Original URL goes in comments_url so phase 1 can rebuild old.reddit

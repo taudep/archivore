@@ -18,7 +18,20 @@ DEFAULT_IGNORE_DOMAINS = {
     "facebook.com",
 }
 
+# Subreddits worth ingesting. Case-insensitive; an empty set disables the
+# filter entirely (every subreddit is ingested).
+DEFAULT_REDDIT_SUBREDDITS = {
+    "localllm",
+    "LocalLLaMA",
+    "DoomEmacs",
+    "snowflake",
+    "git",
+    "dotfiles",
+    "dotnet",
+}
+
 _PATH_FIELDS = {"db_path", "md_path", "output_dir", "log_path"}
+_SET_FIELDS = {"ignore_domains", "reddit_subreddits"}
 
 
 @dataclass
@@ -32,6 +45,9 @@ class Config:
         default_factory=lambda: set(DEFAULT_IGNORE_DOMAINS)
     )
     output_dir: Path = field(default_factory=lambda: Path("hn_this_week"))
+    reddit_subreddits: set[str] = field(
+        default_factory=lambda: set(DEFAULT_REDDIT_SUBREDDITS)
+    )
     digest_days: int = 7
     hn_delay: float = 0.5
     meta_delay: float = 1.5
@@ -75,7 +91,7 @@ def load_config() -> Config:
             value = data[f.name]
             if f.name in _PATH_FIELDS:
                 value = Path(value).expanduser()
-            elif f.name == "ignore_domains":
+            elif f.name in _SET_FIELDS:
                 value = set(value)
             setattr(cfg, f.name, value)
     return cfg

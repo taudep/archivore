@@ -74,18 +74,28 @@ def extract_hn_items(rows: list[HistoryRow]) -> dict[str, HistoryRow]:
     return items
 
 
-def extract_reddit_items(rows: list[HistoryRow]) -> dict[str, str]:
-    """Return ``{post_id: url}`` for reddit.com comment-thread URLs."""
+def extract_reddit_items(
+    rows: list[HistoryRow], allowed_subreddits: set[str] | None = None
+) -> dict[str, str]:
+    """Return ``{post_id: url}`` for reddit.com comment-thread URLs.
+
+    If ``allowed_subreddits`` is given (matched case-insensitively), posts
+    from any other subreddit are skipped. An empty or ``None`` set means no
+    filtering.
+    """
     items: dict[str, str] = {}
     best_counts: dict[str, int] = {}
+    allowed = {s.lower() for s in allowed_subreddits} if allowed_subreddits else None
     for row in rows:
         p = urlparse(row["url"])
         if p.netloc.replace("www.", "").replace("old.", "") != "reddit.com":
             continue
-        m = re.match(r"/r/[^/]+/comments/([a-z0-9]+)", p.path, re.I)
+        m = re.match(r"/r/([^/]+)/comments/([a-z0-9]+)", p.path, re.I)
         if not m:
             continue
-        post_id = m.group(1)
+        subreddit, post_id = m.group(1), m.group(2)
+        if allowed is not None and subreddit.lower() not in allowed:
+            continue
         if post_id not in items or row["visit_count"] > best_counts[post_id]:
             items[post_id] = row["url"]
             best_counts[post_id] = row["visit_count"]

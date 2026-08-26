@@ -69,6 +69,24 @@ class TestExtractReddit:
         items = extract_reddit_items(rows)
         assert set(items) == {"abc123", "xyz789"}
 
+    def test_no_allowlist_keeps_everything(self):
+        rows = [row("https://www.reddit.com/r/python/comments/abc123/title/")]
+        assert set(extract_reddit_items(rows, None)) == {"abc123"}
+        assert set(extract_reddit_items(rows, set())) == {"abc123"}
+
+    def test_allowlist_filters_out_other_subreddits(self):
+        rows = [
+            row("https://www.reddit.com/r/LocalLLaMA/comments/abc123/title/"),
+            row("https://www.reddit.com/r/wallstreetbets/comments/xyz789/yolo/"),
+        ]
+        items = extract_reddit_items(rows, {"localllama"})
+        assert set(items) == {"abc123"}
+
+    def test_allowlist_is_case_insensitive(self):
+        rows = [row("https://www.reddit.com/r/DoomEmacs/comments/abc123/title/")]
+        items = extract_reddit_items(rows, {"doomemacs"})
+        assert set(items) == {"abc123"}
+
 
 class TestExtractX:
     def test_extracts_status_and_article_ids(self):
