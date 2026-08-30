@@ -18,7 +18,7 @@ archivore/
   render.py        — all Markdown output
   commands/        — snapshot + run (fetch pipeline + logging/notifications) orchestration
   clients/         — browser readers, HN/Reddit/X resolvers, async fetcher
-  repository/      — SQLite access (snapshot DB + download queue)
+  repository/      — SQLite access (snapshot DB)
 tests/             — pytest suite for the pure transforms
 ```
 
@@ -33,7 +33,7 @@ Snapshots your open tabs and 90 days of browser history (Chrome + Firefox) into 
 
 ### `archivore run`
 
-Scans browser history since the last successful run (tracked in the user config, not a fixed schedule), pulls out HN, Reddit, and X URLs, fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. A SQLite queue makes runs resumable, and the qmd semantic index is refreshed automatically after each run.
+Scans browser history since the last successful run (tracked in the user config, not a fixed schedule), pulls out HN, Reddit, and X URLs, fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. Instead of a local queue, it coordinates with the [archivore-queue Cloudflare Worker + D1 API](#multi-machine-sync-archivore-queue) — a batch `/claim` before fetching, a `/complete` flush after each phase, and a final `/items` to rebuild the index from global state — so the same article is never fetched twice, even across multiple machines. The qmd semantic index is refreshed automatically after each run.
 
 Reddit posts are filtered by subreddit — only `reddit_subreddits` (in the config, case-insensitive) get ingested, so browsing off-topic subreddits doesn't pollute the knowledge base. Set it to an empty list to disable the filter.
 
@@ -42,12 +42,13 @@ a native macOS notification and/or an email when it finishes — both inert unti
 it's equally safe to run by hand or schedule from cron.
 
 ```
-hn_this_week/
+Todd's Obsidian Vault/Archivore/Raw/   — default output_dir (an iCloud-synced Obsidian vault)
   index.md         — linked table of contents (HN / Reddit / X sections)
   *.md             — one file per article
-  queue.db         — resumable download queue
 ~/Library/Logs/archivore/run.log   — append-only summary of every run (default; see log_path)
 ```
+
+The default `output_dir` is `~/Library/Mobile Documents/com~apple~CloudDocs/Todd's Obsidian Vault/Archivore/Raw` — fully overridable via `output_dir` in config, same as any other `Config` field.
 
 See [Automation (cron)](#automation-cron) below for scheduling and notification setup.
 
@@ -57,13 +58,22 @@ See [Automation (cron)](#automation-cron) below for scheduling and notification 
 uv sync --extra firefox    # firefox extra adds lz4 session decoding
 ```
 
+`archivore run` requires a running [archivore-queue](#multi-machine-sync-archivore-queue) instance — there's no offline fallback, so set `queue_api_url` and `queue_api_token` before your first run (see [Multi-machine sync](#multi-machine-sync-archivore-queue) for what these point at):
+
+```yaml
+queue_api_url: https://archivore-queue.taude.workers.dev
+queue_api_token: "your token here"
+```
+
 For semantic search over captured articles, install [qmd](https://github.com/tobi/qmd):
 
 ```bash
 npm install -g @tobilu/qmd
-qmd collection add ./hn_this_week --name archivore
+qmd collection add "~/Library/Mobile Documents/com~apple~CloudDocs/Todd's Obsidian Vault/Archivore/Raw" --name archivore
 qmd embed
 ```
+
+(Point `qmd collection add` at whatever `output_dir` is configured to, if you've overridden the default.)
 
 ## Usage
 
@@ -71,7 +81,7 @@ qmd embed
 # Snapshot current tabs + 90-day history → ~/tabs.db and ~/tabs.md
 uv run archivore snapshot --markdown ~/tabs.md
 
-# Fetch reading since the last run (HN, Reddit, X) → hn_this_week/
+# Fetch reading since the last run (HN, Reddit, X) → output_dir
 uv run archivore run
 
 # Search the knowledge base
@@ -129,15 +139,17 @@ Since `smtp_password` is a credential, restrict the config file's permissions:
 
 ## Multi-machine sync (archivore-queue)
 
-If you run archivore on more than one machine, the same article can get fetched twice — once
-per machine, since each has its own local reading queue. `worker/` is a small, free-tier
-Cloudflare Worker + D1 database that coordinates across machines so the same item is only ever
-fetched once, without running a server yourself. Full design rationale is in
+If you run archivore on more than one machine, the same article used to get fetched twice — once
+per machine, since each kept a separate local reading queue. `worker/` is a small, free-tier
+Cloudflare Worker + D1 database that coordinates across machines instead, so the same item is
+only ever fetched once, without running a server yourself. Full design rationale is in
 [docs/superpowers/specs/2026-08-29-multi-machine-reading-queue-sync-design.md](docs/superpowers/specs/2026-08-29-multi-machine-reading-queue-sync-design.md).
 
-**Status:** the Worker is built, tested, and deployed live — the Python client isn't wired up to
-it yet (`archivore run` still uses its local SQLite queue for now). That integration is tracked in
-[docs/superpowers/plans/2026-08-30-queue-client-integration.md](docs/superpowers/plans/2026-08-30-queue-client-integration.md).
+**Status:** the Worker is built, tested, deployed live, and wired up — `archivore run` no longer
+has a local queue at all; every run coordinates through this API. To use it on a machine, add
+`queue_api_url` and `queue_api_token` to `config.yaml` (see [Setup](#setup)); once every machine
+you run archivore on is configured the same way, `archivore run` transparently dedups across all
+of them.
 
 **Deployed instance:**
 
@@ -186,7 +198,7 @@ in Cloudflare's encrypted secret store.
 - [x] CLI to query the knowledge base by keyword or topic (`qmd search` / `qmd query`)
 - [x] Auto-refresh the index after each run
 - [x] Multi-machine dedup coordination API (Cloudflare Worker + D1) — built, tested, deployed
-- [ ] Wire `archivore run` to the coordination API, retiring the local per-machine queue
+- [x] Wire `archivore run` to the coordination API, retiring the local per-machine queue
 - [ ] Topic-based wiki directory structure (auto-organize articles by tag/domain)
 - [ ] Auto-link related articles during ingestion
 
@@ -220,10 +232,10 @@ browser history
 archivore snapshot ────────► ~/tabs.db  (tabs + domain history)
      │
      ▼
-archivore run ─────────────► hn_this_week/  (per-article .md + index)
-     │                            ▲
-     ▼                            │ (not yet wired up)
-archivore-queue Worker + D1 ──────┘  dedup across machines, deployed but unconsumed
+archivore run ◄────────────► archivore-queue Worker + D1  (dedup across machines)
+     │
+     ▼
+output_dir  (per-article .md + index)
      │
      ▼
 qmd (BM25 + vectors) ──────► semantic search over everything captured
