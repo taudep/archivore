@@ -11,7 +11,7 @@ export default defineConfig({
       return {
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations },
+          bindings: { TEST_MIGRATIONS: migrations, QUEUE_API_TOKEN: "test-token" },
         },
       };
     }),

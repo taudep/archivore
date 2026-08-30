@@ -4,9 +4,6 @@ compatibility_date = "2024-09-23"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "archivore-queue"
-database_id = "placeholder-replaced-in-task-6"
+database_name = "taude-archivore"
+database_id = "32a15ba8-9b34-4d4f-9d85-59ec2b47af2c"
 migrations_dir = "migrations"
-
-[vars]
-QUEUE_API_TOKEN = "test-token"
