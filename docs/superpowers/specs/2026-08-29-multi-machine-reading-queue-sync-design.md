@@ -181,12 +181,21 @@ CREATE INDEX idx_queue_source ON queue(source);
   queue_api_url: str | None = None
   queue_api_token: str | None = None
   ```
-- `Config.output_dir` default changes conceptually from a repo-local
-  `hn_this_week/` to a `RAW/` folder inside the user's iCloud-synced
-  Obsidian vault. The actual path is user-specific (depends on their vault
-  location) and must be set explicitly in each machine's `config.yaml` —
-  no sensible shared default exists across machines beyond
-  `Path.home() / "RAW"`, which the user should override.
+- `Config.output_dir` default changes from a repo-local `hn_this_week/` to:
+  ```python
+  output_dir: Path = field(
+      default_factory=lambda: Path.home()
+      / "Library/Mobile Documents/com~apple~CloudDocs"
+      / "Todd's Obsidian Vault/Archivore/Raw"
+  )
+  ```
+  i.e. `~/Library/Mobile Documents/com~apple~CloudDocs/Todd's Obsidian
+  Vault/Archivore/Raw/` — the standard macOS local mount point for iCloud
+  Drive, inside the existing Obsidian vault. Since this is a personal path
+  baked into a personal tool, it's a real default rather than a placeholder
+  — still overridable per machine via `config.yaml` if a machine's vault
+  ever lives somewhere else (e.g. a non-Mac machine without this mount
+  point).
 - `archivore/render.write_index()` now builds `index.md` from
   `queue_api.list_items()` (global state) instead of a local queue
   connection.
@@ -282,10 +291,12 @@ One-time cutover, not an ongoing capability:
 1. Provision the Worker + D1 database, deploy via `wrangler deploy`.
 2. Bulk-import existing local `hn_this_week/queue.db` rows into D1 (a
    one-off script, not part of the shipped CLI).
-3. Move existing `hn_this_week/*.md` files into the new `RAW/` folder
-   location.
-4. Point `output_dir` at `RAW/` in each machine's `config.yaml`, and add
-   `queue_api_url` / `queue_api_token`.
+3. Move existing `hn_this_week/*.md` files into the new `output_dir`
+   default location (`~/Library/Mobile Documents/com~apple~CloudDocs/Todd's
+   Obsidian Vault/Archivore/Raw/`).
+4. Add `queue_api_url` / `queue_api_token` to each machine's `config.yaml`
+   (the `output_dir` default now needs no override on machines that share
+   this same iCloud account/vault).
 5. Retire `hn_this_week/queue.db` once migrated.
 
 ## Testing
@@ -304,9 +315,6 @@ One-time cutover, not an ongoing capability:
 
 ## Open Questions
 
-- Exact Obsidian vault path per machine is user-specific and unknown at
-  design time — must be filled in per machine during setup, not
-  hardcoded anywhere.
 - The existing Reddit-ingester bug (old.reddit.com blocking unauthenticated
   scraping — see `docs/plans/reddit-oauth-ingester.md`) is unrelated to
   this design and unaffected by it; fixing it is a separate, independent
