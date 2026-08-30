@@ -1,7 +1,18 @@
 import type { ClaimRequestItem, ClaimResultItem, CompleteRequestItem, Env } from "./types";
 
-function checkAuth(request: Request, env: Env): boolean {
-  return request.headers.get("Authorization") === `Bearer ${env.QUEUE_API_TOKEN}`;
+type AuthResult = "ok" | "unauthorized" | "misconfigured";
+
+function checkAuth(request: Request, env: Env): AuthResult {
+  if (!env.QUEUE_API_TOKEN) {
+    // Fail closed: an unset/empty secret must never be treated as a valid
+    // token to compare against (e.g. a client literally sending
+    // "Authorization: Bearer undefined" must not authenticate).
+    return "misconfigured";
+  }
+  if (request.headers.get("Authorization") !== `Bearer ${env.QUEUE_API_TOKEN}`) {
+    return "unauthorized";
+  }
+  return "ok";
 }
 
 async function handleClaim(request: Request, env: Env): Promise<Response> {
@@ -134,7 +145,14 @@ async function handleItems(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (!checkAuth(request, env)) {
+    const auth = checkAuth(request, env);
+    if (auth === "misconfigured") {
+      return Response.json(
+        { error: "server misconfigured: QUEUE_API_TOKEN is not set" },
+        { status: 500 }
+      );
+    }
+    if (auth === "unauthorized") {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     }
 
