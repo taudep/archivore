@@ -7,3 +7,6 @@ binding = "DB"
 database_name = "archivore-queue"
 database_id = "placeholder-replaced-in-task-6"
 migrations_dir = "migrations"
+
+[vars]
+QUEUE_API_TOKEN = "test-token"
