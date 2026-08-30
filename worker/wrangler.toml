@@ -1,0 +1,9 @@
+name = "archivore-queue"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "archivore-queue"
+database_id = "placeholder-replaced-in-task-6"
+migrations_dir = "migrations"
