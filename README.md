@@ -127,6 +127,57 @@ log_path: ~/Library/Logs/archivore/run.log
 Since `smtp_password` is a credential, restrict the config file's permissions:
 `chmod 600 ~/.config/archivore/config.yaml`.
 
+## Multi-machine sync (archivore-queue)
+
+If you run archivore on more than one machine, the same article can get fetched twice — once
+per machine, since each has its own local reading queue. `worker/` is a small, free-tier
+Cloudflare Worker + D1 database that coordinates across machines so the same item is only ever
+fetched once, without running a server yourself. Full design rationale is in
+[docs/superpowers/specs/2026-08-29-multi-machine-reading-queue-sync-design.md](docs/superpowers/specs/2026-08-29-multi-machine-reading-queue-sync-design.md).
+
+**Status:** the Worker is built, tested, and deployed live — the Python client isn't wired up to
+it yet (`archivore run` still uses its local SQLite queue for now). That integration is tracked in
+[docs/superpowers/plans/2026-08-30-queue-client-integration.md](docs/superpowers/plans/2026-08-30-queue-client-integration.md).
+
+**Deployed instance:**
+
+| Resource | Name |
+|---|---|
+| Worker | `archivore-queue` (`https://archivore-queue.taude.workers.dev`) |
+| D1 database | `taude-archivore` |
+
+The Worker and the database are separate Cloudflare resources with independent names — that's
+intentional, not a naming mismatch.
+
+**API** — three endpoints, all requiring `Authorization: Bearer <token>`, all batch-only (one
+call covers every item a run needs, never one call per item):
+
+- `POST /claim` — claim a batch of item_ids. Atomic per-row via the `item_id` primary key plus
+  `INSERT ... ON CONFLICT DO NOTHING RETURNING`, so two machines racing to claim the same item
+  can never both win.
+- `POST /complete` — report a batch of outcomes (`done` / `failed` / `skipped`) after fetching.
+- `GET /items` — list the full queue (optionally `?since=<timestamp>`), used to rebuild the
+  index from global state rather than just what one machine fetched.
+
+**Redeploying or standing up your own instance** (e.g. a fresh Cloudflare account): see
+[docs/superpowers/plans/2026-08-30-archivore-queue-worker.md](docs/superpowers/plans/2026-08-30-archivore-queue-worker.md)
+for the full walkthrough — `wrangler login`, `wrangler d1 create`, migrations, `wrangler secret
+put QUEUE_API_TOKEN`, `wrangler deploy`. Local development and tests:
+
+```bash
+cd worker
+npm install
+npm test              # 32 tests, vitest + @cloudflare/vitest-pool-workers
+npx tsc --noEmit       # type-check
+```
+
+`QUEUE_API_TOKEN` for local test runs is a fixed value defined in `worker/vitest.config.ts`'s
+Miniflare bindings — it is deliberately **not** in `worker/wrangler.toml`, since that file also
+drives real deploys, and an earlier version of this project accidentally leaked a plaintext test
+token to production that way (`wrangler deploy` syncs `wrangler.toml`'s `[vars]` on every deploy,
+silently overwriting a real secret set via `wrangler secret put`). The real secret only ever lives
+in Cloudflare's encrypted secret store.
+
 ## Roadmap
 
 ### Phase 2 — Knowledge Base
@@ -134,6 +185,8 @@ Since `smtp_password` is a credential, restrict the config file's permissions:
 - [x] Vector embeddings index for semantic search across all captured articles (via [qmd](https://github.com/tobi/qmd))
 - [x] CLI to query the knowledge base by keyword or topic (`qmd search` / `qmd query`)
 - [x] Auto-refresh the index after each run
+- [x] Multi-machine dedup coordination API (Cloudflare Worker + D1) — built, tested, deployed
+- [ ] Wire `archivore run` to the coordination API, retiring the local per-machine queue
 - [ ] Topic-based wiki directory structure (auto-organize articles by tag/domain)
 - [ ] Auto-link related articles during ingestion
 
@@ -168,6 +221,9 @@ archivore snapshot ────────► ~/tabs.db  (tabs + domain history
      │
      ▼
 archivore run ─────────────► hn_this_week/  (per-article .md + index)
+     │                            ▲
+     ▼                            │ (not yet wired up)
+archivore-queue Worker + D1 ──────┘  dedup across machines, deployed but unconsumed
      │
      ▼
 qmd (BM25 + vectors) ──────► semantic search over everything captured
