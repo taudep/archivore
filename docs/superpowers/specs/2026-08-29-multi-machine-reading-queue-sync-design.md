@@ -54,45 +54,82 @@ Two independent layers, each doing exactly one job:
 
 Each machine still runs `archivore run` against its own local browser
 history. The only behavioral change: instead of deduping against a local
-SQLite queue, it asks the Worker whether an item has already been claimed.
+SQLite queue, it asks the Worker whether each item has already been
+claimed — in one batched call covering everything discovered in that run,
+not one call per item. Network round trips are the expensive part here
+(internet latency), so the client always gathers the full set of candidate
+item_ids *before* making any coordination call, then makes exactly one
+`/claim` call and (later) one `/complete` call per run, regardless of how
+many items that involves.
 
 ```
 machine A                    Cloudflare Worker + D1         machine B
     │                                 │                          │
     │  local history scan            │                          │  local history scan
-    ▼                                 │                          ▼
- discover item X                      │                    discover item X
-    │  POST /claim {item_id: X}       │                          │
+    │  extract ALL item_ids          │                          │  extract ALL item_ids
+    ▼  (X, Y, Z — no network yet)     │                          ▼  (X, W — no network yet)
+    │  POST /claim {items: [X,Y,Z]}   │                          │
     ├────────────────────────────────►│                          │
-    │◄──── {claimed: true} ───────────┤                          │
-    ▼                                 │       POST /claim {item_id: X}
- fetch + convert locally              │◄─────────────────────────┤
-    │  write RAW/x.md                 │──── {claimed: false, ───►│
-    │  POST /complete {done, x.md}    │      status: done}       │
-    ├────────────────────────────────►│                          ▼
-    ▼                                 │                    skip — nothing to do;
- iCloud syncs RAW/x.md ───────────────┼─────────────────────► x.md appears here
-                                       │                       via iCloud sync
+    │◄── {X: claimed, Y: claimed,  ───┤                          │
+    │     Z: claimed}                 │      POST /claim {items: [X,W]}
+    ▼                                 │◄─────────────────────────┤
+ fetch + convert X, Y, Z locally      │── {X: taken/done,───────►│
+    │  write RAW/{x,y,z}.md           │    W: claimed}           ▼
+    │  POST /complete {items:         │                    fetch + convert W only
+    │    [X:done, Y:done, Z:failed]}  │                    (X already handled by A)
+    ├────────────────────────────────►│                          │
+    ▼                                 │                          │  POST /complete {items: [W:done]}
+ iCloud syncs RAW/*.md ───────────────┼──────────────────────────┼──────────────►
+                                       │                          ▼
+                                       │                    iCloud syncs RAW/w.md;
+                                       │                    x.md, y.md appear here too
 ```
 
 ## Components
 
 ### 1. Cloudflare Worker (`archivore-queue`)
 
-A small HTTPS API, three endpoints:
+A small HTTPS API, three endpoints. `/claim` and `/complete` are both
+**batch** endpoints — one HTTP call covers every item_id a run needs,
+never one call per item.
 
-- **`POST /claim`** — body `{item_id, source, comments_url, article_url?}`.
-  Executes `INSERT INTO queue (...) VALUES (...) ON CONFLICT (item_id) DO
-  NOTHING` against D1, then checks rows written:
-  - 1 row written → this caller claimed it → `{claimed: true, status:
-    "pending"}`.
-  - 0 rows written → already exists → `SELECT` the existing row and return
-    `{claimed: false, status: <existing status>, retries: <n>}`.
-- **`POST /complete`** — body `{item_id, status, filename?, last_error?}`.
-  Updates the row after a machine finishes (or fails) fetching.
+- **`POST /claim`** — body `{items: [{item_id, source, comments_url,
+  article_url?}, ...]}`. Implemented as a single bulk statement:
+  ```sql
+  INSERT INTO queue (item_id, source, comments_url, article_url, status,
+                      queued_at, updated_at)
+  VALUES (?,?,?,?,'pending',?,?), (?,?,?,?,'pending',?,?), ...
+  ON CONFLICT (item_id) DO NOTHING
+  RETURNING item_id
+  ```
+  `RETURNING` reports exactly which item_ids were newly inserted — rows
+  that hit the conflict (already existed) are silently excluded from it,
+  so no separate "check rows written" step is needed. The primary-key
+  constraint still enforces atomicity per-row exactly as in the
+  single-item version; batching many rows into one statement doesn't
+  weaken that.
+
+  For any requested item_id *not* in the `RETURNING` set, a single
+  follow-up `SELECT item_id, status, retries FROM queue WHERE item_id IN
+  (...)` fetches their current state. Response:
+  ```json
+  {"results": [
+    {"item_id": "X", "claimed": true,  "status": "pending", "retries": 0},
+    {"item_id": "Y", "claimed": false, "status": "done",    "retries": 0},
+    {"item_id": "Z", "claimed": false, "status": "failed",  "retries": 2}
+  ]}
+  ```
+- **`POST /complete`** — body `{items: [{item_id, status, filename?,
+  last_error?}, ...]}`. The Worker executes the per-item `UPDATE`
+  statements via `D1Database.batch()` — Cloudflare's API for running
+  multiple statements in one round trip to D1. This is still exactly one
+  HTTP call from the Python client's perspective; the fact that the Worker
+  internally issues several small statements to D1 doesn't matter, since
+  that hop is same-datacenter, not over the client's internet connection.
 - **`GET /items`** — returns the full `queue` table (or rows updated since
   an optional `?since=` timestamp), so any machine can rebuild `index.md`
-  from global state.
+  from global state. Already a single bulk call by nature; unaffected by
+  this change.
 
 Auth: a single shared bearer token, checked against a Worker secret set via
 `wrangler secret put QUEUE_API_TOKEN`. Same token is copied into each
@@ -129,11 +166,14 @@ CREATE INDEX idx_queue_source ON queue(source);
 
 ### 3. Archivore (Python) changes
 
-- New `archivore/clients/queue_api.py` — thin HTTP client wrapping
-  `claim()`, `complete()`, `list_items()`, mirroring the function
-  signatures of today's `archivore/repository/queue.py` so
-  `commands/run.py`'s pipeline logic changes minimally (swap repository
-  calls for API calls, same call sites).
+- New `archivore/clients/queue_api.py` — thin HTTP client with a batch-first
+  interface: `claim(items: list[ClaimRequest]) -> list[ClaimResult]`,
+  `complete(items: list[CompleteRequest]) -> None`, `list_items() ->
+  list[dict]`. This is a deliberate departure from today's
+  `archivore/repository/queue.py`, whose `insert()`/`mark()` are
+  single-item — `commands/run.py`'s pipeline changes from "queue each item
+  as it's discovered" to "discover everything, then claim the whole batch
+  in one call."
 - `archivore/repository/queue.py` (local SQLite queue) is removed. No
   offline fallback mode — see Non-goals.
 - `archivore/config.py` additions:
@@ -160,27 +200,41 @@ Per `archivore run` invocation, on any machine:
 1. Scan local browser history since that machine's own `last_run`
    watermark (unchanged — browsing history is inherently per-machine, this
    stays local).
-2. Extract HN/Reddit/X item_ids from that history (unchanged, pure local
-   functions in `sources.py`).
-3. For each discovered item_id: `POST /claim`.
-   - `claimed: true` → new item, proceed to fetch.
+2. Extract HN/Reddit/X item_ids from that history — **all sources, fully,
+   in memory** — before any network call to the coordination API happens.
+   This is unchanged as pure local functions in `sources.py`; what changes
+   is that the *caller* now waits until this is completely done before
+   talking to the Worker at all.
+3. One `POST /claim` call with every discovered item_id from step 2.
+   Partition the response into a to-fetch set:
+   - `claimed: true` → new item, fetch it.
    - `claimed: false, status` in `done`/`skipped` → nothing to do. The
      content either already exists locally (synced via iCloud) or will
      appear once the claiming machine finishes.
-   - `claimed: false, status: "failed", retries < max_retries` → treat as
-     retry-eligible: proceed to fetch exactly as if newly claimed, then
-     call `/complete` to update the existing row (an `UPDATE`, not an
-     `INSERT`, since the row already exists).
+   - `claimed: false, status: "failed", retries < max_retries` → also
+     goes into the to-fetch set (retry-eligible; the eventual `/complete`
+     call updates the existing row rather than inserting a new one).
    - `claimed: false, status: "failed", retries >= max_retries` → nothing
      to do, permanently given up.
-4. For newly claimed items: run phase 1 (resolve metadata) + phase 2
-   (download + convert) exactly as today, writing the `.md` file into
-   `RAW/`. Call `POST /complete` with the outcome.
-5. `GET /items` to pull the full global done/skipped set and regenerate
+4. Run phase 1 (resolve metadata) for the to-fetch set, accumulating each
+   outcome in memory. Self-posts are fully resolved in this phase (no
+   phase-2 fetch needed) — flush them with one `POST /complete` call at
+   the end of phase 1, before phase 2 starts. This bounds how much a
+   phase-2 crash can lose: phase 1's completions are already durably
+   recorded by the time phase 2 begins.
+5. Run phase 2 (download + convert) for the remaining to-fetch set,
+   writing `.md` files into `RAW/`, again accumulating outcomes in memory.
+   Flush with a second `POST /complete` call at the end of phase 2.
+6. `GET /items` to pull the full global done/skipped set and regenerate
    `index.md` — reflecting the whole cross-machine corpus, not just this
    run's local work.
-6. Run `qmd embed` against `RAW/` as before — now indexing everything
+7. Run `qmd embed` against `RAW/` as before — now indexing everything
    iCloud has synced in, regardless of which machine fetched it.
+
+This brings the coordination-API cost of a run down to **4 HTTP calls
+total** (`/claim`, two `/complete` flushes, `/items`), independent of how
+many items were discovered — versus 2N+1 calls under a naive per-item
+approach.
 
 ## Error Handling / Edge Cases
 
@@ -196,14 +250,19 @@ Per `archivore run` invocation, on any machine:
   claimer might be asleep or offline. Implementation detail: `/claim`
   returns `retries` in its response precisely so the client can decide
   whether to attempt a retry itself.
-- **Stuck `pending` claims** — if a machine claims an item (`status='pending'`)
-  and crashes or is killed before calling `/complete`, no other machine will
-  currently pick it up (only `failed` items are retry-eligible). Accepted as
-  a known v1 limitation: rare in practice for a tool run manually or via
-  cron, and recoverable by manually resetting the row's status in D1 if it
-  ever happens. A staleness timeout (e.g. treat `pending` older than N hours
-  as retry-eligible) would close this gap but is deliberately left out for
-  now — YAGNI until it's an actual recurring problem.
+- **Stuck `pending` claims** — if a machine claims a batch of items and
+  crashes or is killed before the corresponding `/complete` flush, none of
+  those items get marked `failed`, so no other machine will pick them up
+  (only `failed` items are retry-eligible; `pending` isn't). Batching
+  `/complete` per-phase (rather than per-item) bounds this to at most one
+  phase's worth of items per crash, not the item that happened to be
+  in-flight — a real but accepted trade-off for going from O(N) to O(1)
+  network calls. Accepted as a known v1 limitation: rare in practice for a
+  tool run manually or via cron, and recoverable by manually resetting
+  affected rows' status in D1 if it ever happens. A staleness timeout (e.g.
+  treat `pending` older than N hours as retry-eligible) would close this
+  gap but is deliberately left out for now — YAGNI until it's an actual
+  recurring problem.
 - **Worker unreachable** — `archivore run` fails fast for the queuing phase
   rather than falling back to local-only queueing. Divergent local state
   across machines is worse than telling the user to try again later.
@@ -232,14 +291,16 @@ One-time cutover, not an ongoing capability:
 ## Testing
 
 - **Worker** — separate lightweight test setup (Miniflare/Vitest, the
-  standard pattern for Workers + D1), covering: claim-when-new,
-  claim-when-existing, complete updates the right row, retry eligibility
-  when a row is `failed`.
+  standard pattern for Workers + D1), covering: a batch `/claim` with a mix
+  of new and already-existing item_ids in the same call (verifying
+  `RETURNING` reports exactly the new ones), batch `/complete` updates
+  every row it targets, retry eligibility when a row is `failed`.
 - **Python client** — `clients/queue_api.py` is mocked in tests (no live
-  network calls), verifying `commands/run.py` correctly skips
-  already-claimed items and only fetches newly-claimed ones. Same style as
-  existing tests (`test_sources.py`, `test_render.py` — pure functions,
-  mocked I/O boundaries).
+  network calls), verifying `commands/run.py` correctly partitions a
+  `/claim` response into to-fetch vs. skip, and that both `/complete`
+  flush points (after phase 1, after phase 2) send the right accumulated
+  batches. Same style as existing tests (`test_sources.py`,
+  `test_render.py` — pure functions, mocked I/O boundaries).
 
 ## Open Questions
 
