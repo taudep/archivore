@@ -1,6 +1,11 @@
-"""Fetch reading since the last run: queue HN/Reddit/X items, resolve
-metadata, download articles concurrently, write the index, then log a
-summary and optionally notify.
+"""Fetch reading since the last run: discover HN/Reddit/X items, claim them
+against the shared coordination API, resolve metadata, download articles
+concurrently, write the index, then log a summary and optionally notify.
+
+Coordination with other machines costs exactly 4 API calls per run,
+regardless of item count: one /claim, two /complete flushes (after phase 1,
+after phase 2), one /items. See docs/superpowers/specs/2026-08-29-multi-
+machine-reading-queue-sync-design.md for why.
 
 Phase 1 resolves metadata sequentially (rate-limit friendly); phase 2
 downloads link-post articles concurrently with a Rich live table. Logging
@@ -12,7 +17,6 @@ beyond what an interactive run already needs.
 import asyncio
 import shutil
 import smtplib
-import sqlite3
 import subprocess
 import sys
 import time
@@ -26,12 +30,17 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from archivore.clients import fetcher, hn, reddit, x
+from archivore.clients import fetcher, hn, queue_api, reddit, x
 from archivore.clients.browsers import get_all_history
 from archivore.config import Config, save_last_run
-from archivore.models import ResolvedItem, RunResult
+from archivore.models import (
+    ClaimItem,
+    ClaimResult,
+    CompleteItem,
+    ResolvedItem,
+    RunResult,
+)
 from archivore.render import write_article_file, write_index
-from archivore.repository import queue
 from archivore.sources import (
     extract_hn_items,
     extract_reddit_items,
@@ -42,123 +51,173 @@ from archivore.timeutil import days_ago
 console = Console()
 
 
-def sync_all_sources(
-    conn: sqlite3.Connection, cfg: Config, since: datetime, now: str
-) -> int:
-    """Scan browser history since ``since`` and queue new items from every
-    source."""
+def discover_items(cfg: Config, since: datetime) -> list[ClaimItem]:
+    """Scan browser history since ``since`` and extract every HN/Reddit/X
+    item — fully, in memory — before any coordination-API call happens."""
     history = get_all_history(since)
-    new = 0
+    items: list[ClaimItem] = []
 
     hn_items = extract_hn_items(history)
     console.print(f"  HN:     [cyan]{len(hn_items)}[/cyan] item(s)")
     for item_id in hn_items:
-        comments_url = f"https://news.ycombinator.com/item?id={item_id}"
-        new += queue.insert(conn, item_id, "hn", comments_url, now)
+        items.append(
+            ClaimItem(
+                item_id=item_id,
+                source="hn",
+                comments_url=f"https://news.ycombinator.com/item?id={item_id}",
+                article_url=None,
+            )
+        )
 
     reddit_items = extract_reddit_items(history, cfg.reddit_subreddits)
     console.print(f"  Reddit: [cyan]{len(reddit_items)}[/cyan] item(s)")
     for post_id, orig_url in reddit_items.items():
         # Original URL goes in comments_url so phase 1 can rebuild old.reddit
-        new += queue.insert(conn, post_id, "reddit", orig_url, now)
+        items.append(
+            ClaimItem(
+                item_id=post_id,
+                source="reddit",
+                comments_url=orig_url,
+                article_url=None,
+            )
+        )
 
     x_items = extract_x_items(history)
     console.print(f"  X:      [cyan]{len(x_items)}[/cyan] item(s)")
     for xid, (kind, orig_url) in x_items.items():
         # kind|orig_url goes in article_url until phase 1 resolves it; the x_
         # prefix keeps numeric tweet IDs from colliding with HN item IDs
-        new += queue.insert(
-            conn,
-            f"x_{xid}",
-            "x",
-            orig_url,
-            now,
-            article_url=f"{kind}|{orig_url}",
+        items.append(
+            ClaimItem(
+                item_id=f"x_{xid}",
+                source="x",
+                comments_url=orig_url,
+                article_url=f"{kind}|{orig_url}",
+            )
         )
 
-    conn.commit()
-    return new
+    return items
 
 
-def _resolve_one(row: sqlite3.Row, cfg: Config) -> ResolvedItem | None:
-    """Dispatch one queue row to its source client, honoring rate delays."""
-    source = row["source"]
+def partition_claims(results: list[ClaimResult], max_retries: int) -> list[str]:
+    """Return the item_ids this run should fetch: newly claimed items, plus
+    previously-failed items still under the retry limit."""
+    to_fetch = []
+    for r in results:
+        if r["claimed"]:
+            to_fetch.append(r["item_id"])
+        elif r["status"] == "failed" and r["retries"] < max_retries:
+            to_fetch.append(r["item_id"])
+    return to_fetch
+
+
+def _resolve_one(item: ClaimItem, cfg: Config) -> ResolvedItem | None:
+    """Dispatch one claimed item to its source client, honoring rate delays."""
+    source = item["source"]
     if source == "hn":
-        result = hn.resolve(row["item_id"])
+        result = hn.resolve(item["item_id"])
         time.sleep(cfg.hn_delay)
     elif source == "reddit":
-        result = reddit.resolve(row["item_id"], row["comments_url"])
+        result = reddit.resolve(item["item_id"], item["comments_url"])
         time.sleep(cfg.meta_delay)
     elif source == "x":
-        stored = row["article_url"]
+        stored = item["article_url"]
         kind, orig_url = (
-            stored.split("|", 1) if stored else ("tweet", row["comments_url"])
+            stored.split("|", 1) if stored else ("tweet", item["comments_url"])
         )
-        result = x.resolve(row["item_id"].removeprefix("x_"), kind, orig_url)
+        result = x.resolve(item["item_id"].removeprefix("x_"), kind, orig_url)
         time.sleep(cfg.meta_delay)
     else:
         result = None
     return result
 
 
-def phase1_resolve(conn: sqlite3.Connection, cfg: Config, now: str) -> None:
-    """Resolve metadata for every queued item that still lacks a title."""
-    rows = queue.unresolved(conn)
-    if not rows:
-        return
+def phase1_resolve(
+    to_fetch: list[ClaimItem], cfg: Config
+) -> tuple[list[CompleteItem], list[dict]]:
+    """Resolve metadata for every claimed item.
 
-    console.print(f"\n[bold]Phase 1[/bold] — resolving {len(rows)} item(s)…")
+    Returns (phase-1 completions to report immediately, items ready for a
+    phase-2 download). Self-posts are fully resolved here and never reach
+    phase 2.
+    """
+    if not to_fetch:
+        return [], []
 
-    for row in rows:
-        item_id = row["item_id"]
-        console.print(f"  [{row['source']}:{item_id}] ", end="")
+    console.print(f"\n[bold]Phase 1[/bold] — resolving {len(to_fetch)} item(s)…")
+    completions: list[CompleteItem] = []
+    to_download: list[dict] = []
+
+    for claim_item in to_fetch:
+        item_id = claim_item["item_id"]
+        console.print(f"  [{claim_item['source']}:{item_id}] ", end="")
         try:
-            item = _resolve_one(row, cfg)
+            item = _resolve_one(claim_item, cfg)
             if item is None or not item.title:
                 reason = (
                     "no title"
                     if item is not None
-                    else f"unknown source '{row['source']}'"
+                    else f"unknown source '{claim_item['source']}'"
                 )
                 console.print(f"[yellow]{reason}, skipping[/yellow]")
-                queue.mark(conn, item_id, "skipped", now, last_error=reason)
+                completions.append(
+                    CompleteItem(
+                        item_id=item_id,
+                        status="skipped",
+                        title=None,
+                        is_selfpost=None,
+                        filename=None,
+                        last_error=reason,
+                    )
+                )
                 continue
 
             console.print(item.title[:70])
 
             if item.is_selfpost and item.selftext is not None:
-                # Write the file now; no phase-2 fetch needed
                 filename = write_article_file(
                     cfg.output_dir,
                     item_id,
                     item.title,
                     item.article_url,
-                    row["comments_url"],
+                    claim_item["comments_url"],
                     item.selftext,
                     "",
                 )
-                queue.mark(
-                    conn,
-                    item_id,
-                    "done",
-                    now,
-                    title=item.title,
-                    article_url=item.article_url,
-                    is_selfpost=1,
-                    filename=filename,
+                completions.append(
+                    CompleteItem(
+                        item_id=item_id,
+                        status="done",
+                        title=item.title,
+                        is_selfpost=True,
+                        filename=filename,
+                        last_error=None,
+                    )
                 )
             else:
-                queue.set_metadata(
-                    conn,
-                    item_id,
-                    item.title,
-                    item.article_url,
-                    item.is_selfpost,
-                    now,
+                to_download.append(
+                    {
+                        "item_id": item_id,
+                        "source": claim_item["source"],
+                        "title": item.title,
+                        "article_url": item.article_url,
+                        "comments_url": claim_item["comments_url"],
+                    }
                 )
         except Exception as e:
             console.print(f"[red]error: {e}[/red]")
-            queue.mark(conn, item_id, "failed", now, last_error=str(e))
+            completions.append(
+                CompleteItem(
+                    item_id=item_id,
+                    status="failed",
+                    title=None,
+                    is_selfpost=None,
+                    filename=None,
+                    last_error=str(e),
+                )
+            )
+
+    return completions, to_download
 
 
 def _build_table(state: fetcher.StateMap, rows_by_id: dict) -> Table:
@@ -189,19 +248,19 @@ def _build_table(state: fetcher.StateMap, rows_by_id: dict) -> Table:
     return table
 
 
-async def phase2_download(conn: sqlite3.Connection, cfg: Config, now: str) -> None:
-    """Download all pending link-post articles concurrently."""
-    rows = queue.downloadable(conn, cfg.max_retries)
-    if not rows:
+async def phase2_download(to_download: list[dict], cfg: Config) -> list[CompleteItem]:
+    """Download all claimed link-post articles concurrently. Returns each
+    item's outcome for the caller to report via queue_api.complete()."""
+    if not to_download:
         console.print("\n[green]Nothing to download in phase 2.[/green]")
-        return
+        return []
 
-    rows_by_id = {r["item_id"]: dict(r) for r in rows}
-    state: fetcher.StateMap = {r["item_id"]: ("⏸", "queued") for r in rows}
-    db_lock = asyncio.Lock()
+    rows_by_id = {item["item_id"]: item for item in to_download}
+    state: fetcher.StateMap = {item["item_id"]: ("⏸", "queued") for item in to_download}
+    completions: list[CompleteItem] = []
 
     console.print(
-        f"\n[bold]Phase 2[/bold] — downloading {len(rows)} article(s) "
+        f"\n[bold]Phase 2[/bold] — downloading {len(to_download)} article(s) "
         f"({cfg.concurrency} concurrent)…\n"
     )
 
@@ -209,30 +268,26 @@ async def phase2_download(conn: sqlite3.Connection, cfg: Config, now: str) -> No
     async with aiohttp.ClientSession(connector=connector) as session:
         sem = asyncio.Semaphore(cfg.concurrency)
 
-        async def bounded(row: sqlite3.Row) -> None:
+        async def bounded(item: dict) -> None:
             async with sem:
-                await fetcher.fetch_article(
-                    session,
-                    row,
-                    state,
-                    db_lock,
-                    conn,
-                    now,
-                    cfg.output_dir,
-                    cfg.max_retries,
+                result = await fetcher.fetch_article(
+                    session, item, state, cfg.output_dir, cfg.max_retries
                 )
+                completions.append(result)
 
         with Live(
             _build_table(state, rows_by_id),
             refresh_per_second=4,
             console=console,
         ) as live:
-            tasks = [asyncio.create_task(bounded(r)) for r in rows]
+            tasks = [asyncio.create_task(bounded(item)) for item in to_download]
             while not all(t.done() for t in tasks):
                 live.update(_build_table(state, rows_by_id))
                 await asyncio.sleep(0.25)
             await asyncio.gather(*tasks)
             live.update(_build_table(state, rows_by_id))
+
+    return completions
 
 
 def run_qmd_embed() -> None:
@@ -273,30 +328,51 @@ def _pipeline(
 ) -> RunResult:
     """Execute the full fetch pipeline and return its outcome.
 
-    Scans history since the last successful run (tracked in the user config)
-    rather than a fixed window, so runs aren't tied to any particular
-    schedule. Pass ``days_override`` to scan a fixed window instead, e.g. for
-    a backfill.
+    Scans history since the last successful run (tracked in the user
+    config) rather than a fixed window. Coordination with other machines
+    happens in exactly 4 API calls total, regardless of item count.
     """
-    cfg.output_dir.mkdir(exist_ok=True)
-    conn = queue.open_queue(cfg.output_dir / "queue.db")
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
     run_start = datetime.now(timezone.utc)
-    now = run_start.isoformat()
 
     since, why = _resolve_since(cfg, days_override)
     console.print(f"[bold]Scanning browser history[/bold] ({why})…")
-    new = sync_all_sources(conn, cfg, since, now)
-    console.print(f"Queued [cyan]{new}[/cyan] new item(s)\n")
+    discovered = discover_items(cfg, since)
+    console.print(f"Discovered [cyan]{len(discovered)}[/cyan] item(s) from history\n")
 
-    phase1_resolve(conn, cfg, now)
-    asyncio.run(phase2_download(conn, cfg, now))
+    by_id = {i["item_id"]: i for i in discovered}
+    claim_results = queue_api.claim(cfg, discovered)
+    to_fetch_ids = partition_claims(claim_results, cfg.max_retries)
+    to_fetch = [by_id[iid] for iid in to_fetch_ids]
+    console.print(f"Claimed [cyan]{len(to_fetch)}[/cyan] new/retryable item(s)\n")
 
-    index_path, n = write_index(
-        cfg.output_dir, queue.index_rows(conn), since, run_start
+    phase1_completions, to_download = phase1_resolve(to_fetch, cfg)
+    queue_api.complete(cfg, phase1_completions)
+
+    phase2_completions = asyncio.run(phase2_download(to_download, cfg))
+    queue_api.complete(cfg, phase2_completions)
+
+    all_items = queue_api.list_items(cfg)
+    done_rows = [
+        i for i in all_items if i["status"] in ("done", "skipped") and i["filename"]
+    ]
+    index_path, n = write_index(cfg.output_dir, done_rows, since, run_start)
+
+    done = sum(1 for i in all_items if i["status"] == "done")
+    skipped = sum(1 for i in all_items if i["status"] == "skipped")
+    failed = sum(1 for i in all_items if i["status"] == "failed")
+    retryable = sum(
+        1
+        for i in all_items
+        if i["status"] == "failed" and i["retries"] < cfg.max_retries
     )
 
-    done, skipped, failed, retryable = queue.status_counts(conn, cfg.max_retries)
-    new_items = [dict(r) for r in queue.done_this_run(conn, now)]
+    new_items = [
+        {"source": by_id[c["item_id"]]["source"], "title": c["title"]}
+        for c in (*phase1_completions, *phase2_completions)
+        if c["status"] == "done"
+    ]
+
     console.print(
         f"\n[bold green]Done[/bold green] — "
         f"{done} saved, {skipped} skipped, {failed} failed"
@@ -308,11 +384,10 @@ def _pipeline(
     if not skip_embed:
         run_qmd_embed()
 
-    save_last_run(now)
-    conn.close()
+    save_last_run(run_start.isoformat())
 
     return RunResult(
-        new_queued=new,
+        new_queued=len(to_fetch),
         done=done,
         skipped=skipped,
         failed=failed,
