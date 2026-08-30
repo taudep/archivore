@@ -44,7 +44,13 @@ class Config:
     ignore_domains: set[str] = field(
         default_factory=lambda: set(DEFAULT_IGNORE_DOMAINS)
     )
-    output_dir: Path = field(default_factory=lambda: Path("hn_this_week"))
+    output_dir: Path = field(
+        default_factory=lambda: (
+            Path.home()
+            / "Library/Mobile Documents/com~apple~CloudDocs"
+            / "Todd's Obsidian Vault/Archivore/Raw"
+        )
+    )
     reddit_subreddits: set[str] = field(
         default_factory=lambda: set(DEFAULT_REDDIT_SUBREDDITS)
     )
@@ -53,6 +59,8 @@ class Config:
     meta_delay: float = 1.5
     max_retries: int = 4
     concurrency: int = 5
+    queue_api_url: str | None = None
+    queue_api_token: str | None = None
     last_run: str | None = None
     log_path: Path = field(
         default_factory=lambda: Path.home() / "Library/Logs/archivore/run.log"

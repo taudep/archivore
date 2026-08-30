@@ -59,3 +59,32 @@ class RunResult:
     index_path: Path
     article_count: int
     new_items: list[dict]
+
+
+class ClaimItem(TypedDict):
+    """One item sent to the coordination API's /claim endpoint."""
+
+    item_id: str
+    source: str
+    comments_url: str
+    article_url: str | None
+
+
+class ClaimResult(TypedDict):
+    """One result from the coordination API's /claim endpoint."""
+
+    item_id: str
+    claimed: bool
+    status: str
+    retries: int
+
+
+class CompleteItem(TypedDict):
+    """One outcome sent to the coordination API's /complete endpoint."""
+
+    item_id: str
+    status: str
+    title: str | None
+    is_selfpost: bool | None
+    filename: str | None
+    last_error: str | None
