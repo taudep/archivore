@@ -1,15 +1,19 @@
-"""Async article downloader used by phase 2 of the reading digest."""
+"""Async article downloader used by phase 2 of the reading digest.
+
+Every call returns a CompleteItem for the caller to report back to the
+coordination API — this module never talks to that API directly, and
+never handles self-posts (phase 1 resolves and completes those before
+anything reaches here)."""
 
 import asyncio
-import sqlite3
 import ssl
 from pathlib import Path
 
 import aiohttp
 
 from archivore.clients.http import BROWSER_HEADERS, aiohttp_ssl_ctx
+from archivore.models import CompleteItem
 from archivore.render import html_to_markdown, write_article_file
-from archivore.repository import queue
 
 _PERMANENT_ERRORS = {400, 401, 403, 404, 405, 410, 451}
 
@@ -21,42 +25,35 @@ StateMap = dict[str, tuple[str, str]]
 
 async def fetch_article(
     session: aiohttp.ClientSession,
-    row: sqlite3.Row,
+    item: dict,
     state: StateMap,
-    db_lock: asyncio.Lock,
-    conn: sqlite3.Connection,
-    now: str,
     output_dir: Path,
     max_retries: int,
-) -> None:
-    """Download one article, convert to Markdown, and update the queue."""
-    item_id = row["item_id"]
-    title = row["title"]
-    article_url = row["article_url"]
-    comments_url = row["comments_url"]
+) -> CompleteItem:
+    """Download one article, convert to Markdown, and return its outcome.
+
+    ``item`` needs keys: item_id, title, article_url, comments_url.
+    """
+    item_id = item["item_id"]
+    title = item["title"]
+    article_url = item["article_url"]
+    comments_url = item["comments_url"]
 
     state[item_id] = ("⏳", "fetching…")
 
-    if row["is_selfpost"]:
-        # Should have been written in phase 1; mark done if file exists
-        existing = list(output_dir.glob(f"{item_id}-*.md"))
-        if existing:
-            async with db_lock:
-                queue.mark(conn, item_id, "done", now, filename=existing[0].name)
-            state[item_id] = ("✅", "already saved")
-        else:
-            state[item_id] = ("⚠", "selfpost but no file?")
-        return
-
-    async def _skip(note: str, error: str, icon_status: str) -> None:
+    def _skip(note: str, error: str, icon_status: str) -> CompleteItem:
         filename = write_article_file(
             output_dir, item_id, title, article_url, comments_url, note, ""
         )
-        async with db_lock:
-            queue.mark(
-                conn, item_id, "skipped", now, filename=filename, last_error=error
-            )
         state[item_id] = ("⛔", icon_status)
+        return CompleteItem(
+            item_id=item_id,
+            status="skipped",
+            title=title,
+            is_selfpost=False,
+            filename=filename,
+            last_error=error,
+        )
 
     last_err: Exception | None = None
     for attempt in range(max_retries):
@@ -70,12 +67,11 @@ async def fetch_article(
                 max_field_size=_HEADER_LIMIT,
             ) as resp:
                 if resp.status in _PERMANENT_ERRORS:
-                    await _skip(
+                    return _skip(
                         f"_Article unavailable (HTTP {resp.status})._\n",
                         f"HTTP {resp.status}",
                         f"HTTP {resp.status}",
                     )
-                    return
 
                 if resp.status == 429 or resp.status >= 500:
                     raise aiohttp.ClientResponseError(
@@ -85,28 +81,26 @@ async def fetch_article(
                 content_type = resp.headers.get("Content-Type", "")
                 if "text" not in content_type and "html" not in content_type:
                     short_type = content_type.split(";")[0]
-                    await _skip(
+                    return _skip(
                         f"_Skipped: non-HTML content ({short_type})._\n",
                         "non-HTML",
                         "non-HTML",
                     )
-                    return
 
                 page = await resp.text(errors="replace")
                 md_body = html_to_markdown(page)
                 filename = write_article_file(
-                    output_dir,
-                    item_id,
-                    title,
-                    article_url,
-                    comments_url,
-                    "",
-                    md_body,
+                    output_dir, item_id, title, article_url, comments_url, "", md_body
                 )
-                async with db_lock:
-                    queue.mark(conn, item_id, "done", now, filename=filename)
                 state[item_id] = ("✅", "saved")
-                return
+                return CompleteItem(
+                    item_id=item_id,
+                    status="done",
+                    title=title,
+                    is_selfpost=False,
+                    filename=filename,
+                    last_error=None,
+                )
 
         except (aiohttp.ClientError, asyncio.TimeoutError, ssl.SSLError) as e:
             last_err = e
@@ -114,5 +108,11 @@ async def fetch_article(
             await asyncio.sleep(2**attempt)
 
     state[item_id] = ("❌", f"failed: {str(last_err)[:40]}")
-    async with db_lock:
-        queue.mark(conn, item_id, "failed", now, last_error=str(last_err))
+    return CompleteItem(
+        item_id=item_id,
+        status="failed",
+        title=title,
+        is_selfpost=False,
+        filename=None,
+        last_error=str(last_err),
+    )
