@@ -120,6 +120,18 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
   return Response.json({ updated: items.length });
 }
 
+async function handleItems(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const since = url.searchParams.get("since");
+  const stmt = since
+    ? env.DB.prepare(
+        "SELECT * FROM queue WHERE updated_at >= ? ORDER BY source, item_id DESC"
+      ).bind(since)
+    : env.DB.prepare("SELECT * FROM queue ORDER BY source, item_id DESC");
+  const { results } = await stmt.all();
+  return Response.json({ items: results });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (!checkAuth(request, env)) {
@@ -132,6 +144,9 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/complete") {
       return handleComplete(request, env);
+    }
+    if (request.method === "GET" && url.pathname === "/items") {
+      return handleItems(request, env);
     }
 
     return Response.json({ error: "not found" }, { status: 404 });
