@@ -136,7 +136,7 @@ Expected: prints the row count claimed/reported, then the `mv` reminder.
 - [ ] **Step 4: Verify the import before moving or deleting anything**
 
 ```bash
-cd worker && wrangler d1 execute archivore-queue --remote --command \
+cd worker && wrangler d1 execute taude-archivore --remote --command \
   "SELECT COUNT(*) AS n FROM queue"
 ```
 

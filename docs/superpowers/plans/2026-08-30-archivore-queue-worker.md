@@ -119,10 +119,16 @@ compatibility_date = "2024-09-23"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "archivore-queue"
+database_name = "taude-archivore"
 database_id = "placeholder-replaced-in-task-6"
 migrations_dir = "migrations"
 ```
+
+Note: `name` (the Worker's own service name, `archivore-queue`) and `database_name`
+(the D1 database, `taude-archivore`) are deliberately different — they're separate
+Cloudflare resources with independent names, not a naming inconsistency. Every `d1`
+CLI command below (`d1 create`, `d1 migrations apply`, `d1 execute`) must use the
+database name, `taude-archivore`, not the Worker name.
 
 - [ ] **Step 6: Write `worker/src/types.ts`**
 
@@ -856,7 +862,7 @@ Expected: opens a browser tab, completes OAuth, and prints "Successfully logged 
 - [ ] **Step 2: Create the D1 database**
 
 ```bash
-wrangler d1 create archivore-queue
+wrangler d1 create taude-archivore
 ```
 
 Expected output includes a `[[d1_databases]]` block with a real `database_id`. Copy that `database_id`.
@@ -868,7 +874,7 @@ Replace the `database_id = "placeholder-replaced-in-task-6"` line with the real 
 - [ ] **Step 4: Apply the migration to the real (remote) database**
 
 ```bash
-wrangler d1 migrations apply archivore-queue --remote
+wrangler d1 migrations apply taude-archivore --remote
 ```
 
 Expected: confirms `0001_init.sql` applied.
@@ -910,7 +916,7 @@ Run it a second time — expected: `{"results":[{"item_id":"smoke-test-1","claim
 - [ ] **Step 8: Clean up the smoke-test row**
 
 ```bash
-wrangler d1 execute archivore-queue --remote --command "DELETE FROM queue WHERE item_id = 'smoke-test-1'"
+wrangler d1 execute taude-archivore --remote --command "DELETE FROM queue WHERE item_id = 'smoke-test-1'"
 ```
 
 - [ ] **Step 9: Commit the real database_id**

@@ -1220,7 +1220,7 @@ Expected: "Discovered N item(s)" may be similar, but "Claimed 0 new/retryable it
 - [ ] **Step 4: Confirm the D1 row survived correctly**
 
 ```bash
-cd worker && wrangler d1 execute archivore-queue --remote --command \
+cd worker && wrangler d1 execute taude-archivore --remote --command \
   "SELECT item_id, source, status, title, filename FROM queue ORDER BY updated_at DESC LIMIT 5"
 ```
 
