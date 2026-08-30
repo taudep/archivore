@@ -191,11 +191,16 @@ CREATE INDEX idx_queue_source ON queue(source);
   ```
   i.e. `~/Library/Mobile Documents/com~apple~CloudDocs/Todd's Obsidian
   Vault/Archivore/Raw/` — the standard macOS local mount point for iCloud
-  Drive, inside the existing Obsidian vault. Since this is a personal path
-  baked into a personal tool, it's a real default rather than a placeholder
-  — still overridable per machine via `config.yaml` if a machine's vault
-  ever lives somewhere else (e.g. a non-Mac machine without this mount
-  point).
+  Drive, inside the existing Obsidian vault.
+
+  This is only the *default*. `output_dir` is a normal `Config` field like
+  any other (already in `_PATH_FIELDS`, so `load_config()` expands `~` and
+  applies overrides the same way it does for `db_path`/`md_path`/`log_path`
+  today) — every machine's `config.yaml` can set its own `output_dir` to
+  point wherever that machine's vault actually lives. This matters in
+  practice, not just hypothetically: any machine that isn't on this Apple ID
+  or doesn't use this exact vault name needs its own value, and that's a
+  first-class, fully-supported override, not a fallback edge case.
 - `archivore/render.write_index()` now builds `index.md` from
   `queue_api.list_items()` (global state) instead of a local queue
   connection.
@@ -294,9 +299,9 @@ One-time cutover, not an ongoing capability:
 3. Move existing `hn_this_week/*.md` files into the new `output_dir`
    default location (`~/Library/Mobile Documents/com~apple~CloudDocs/Todd's
    Obsidian Vault/Archivore/Raw/`).
-4. Add `queue_api_url` / `queue_api_token` to each machine's `config.yaml`
-   (the `output_dir` default now needs no override on machines that share
-   this same iCloud account/vault).
+4. Add `queue_api_url` / `queue_api_token` to each machine's `config.yaml`.
+   Set `output_dir` too, on any machine where the built-in default path
+   doesn't match where that machine's vault actually lives.
 5. Retire `hn_this_week/queue.db` once migrated.
 
 ## Testing
