@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Wire `archivore run` to the deployed archivore-queue Worker instead of a local SQLite queue, so reading-digest work is deduped across machines, and retire the local queue entirely.
+**Goal:** Wire `archivore run` to the deployed archivore-queue Worker instead of a local SQLite queue, so reading-digest work is deduped across machines, and remove the now-dead local queue code.
 
 **Architecture:** Discover every HN/Reddit/X item from local history first, claim the whole batch in one API call, resolve+download only what was actually claimed (accumulating outcomes in memory), flush completions in two batches (after phase 1, after phase 2), then rebuild `index.md` from the global item list.
 
@@ -15,6 +15,15 @@
 - No offline fallback: if the coordination API is unreachable, the run fails loudly. Do not add a local-queue fallback path.
 - `output_dir` remains a normal, fully overridable `Config` field — its new default is a real path, not a placeholder, but every machine's `config.yaml` can still override it.
 - Follow existing project conventions: `requests` for HTTP (not `httpx`/`urllib`), TypedDicts in `models.py` for wire-format shapes, `ruff format`/`ruff check` clean, tests mirror the existing style in `test_sources.py`/`test_render.py` (pure functions, mocked I/O boundaries, no live network calls in `pytest`).
+- **This plan does not touch real historical data.** It deletes the now-dead
+  `archivore/repository/queue.py` *source file* (Task 4) — that's safe,
+  reversible via git, and has nothing to do with the user's actual queue
+  contents. It never deletes or moves the real local `hn_this_week/queue.db`
+  or its `.md` files. That real-data cutover is intentionally a separate
+  plan (`docs/superpowers/plans/2026-08-30-queue-migration-cutover.md`), to
+  be run only after this plan's Task 6 end-to-end verification has been
+  trusted through real use — not bundled into the same pass as the code
+  change.
 
 ---
 
@@ -36,10 +45,12 @@ tests/
   test_config.py                 - NEW
   test_queue_api.py              - NEW
   test_run.py                    - NEW (partition_claims)
-scripts/
-  migrate_queue_to_d1.py         - NEW, one-off, not part of the shipped CLI
 README.md                        - update setup/config docs
 ```
+
+The one-off `queue.db` → D1 migration script and the real data cutover live in
+a separate plan (`docs/superpowers/plans/2026-08-30-queue-migration-cutover.md`),
+deliberately kept out of this one — see Global Constraints below.
 
 ---
 
@@ -1084,129 +1095,7 @@ git commit -m "Rewire archivore run onto the coordination API; retire local queu
 
 ---
 
-### Task 5: Migration script
-
-**Files:**
-- Create: `scripts/migrate_queue_to_d1.py`
-
-This is a one-off operational script, not part of the shipped CLI — it's run once by hand during cutover, not tested with `pytest` (matches the spec's Migration section: "a one-off script, not part of the shipped CLI").
-
-- [ ] **Step 1: Create the scripts directory and the migration script**
-
-```bash
-mkdir -p scripts
-```
-
-`scripts/migrate_queue_to_d1.py`:
-
-```python
-#!/usr/bin/env python3
-"""One-off: bulk-import an existing local hn_this_week/queue.db into the
-archivore-queue D1 database via the coordination API, then report which
-.md files still need to be moved into the new output_dir.
-
-Usage:
-    QUEUE_API_URL=https://archivore-queue.<sub>.workers.dev \\
-    QUEUE_API_TOKEN=<token> \\
-    python3 scripts/migrate_queue_to_d1.py hn_this_week/queue.db
-"""
-
-import os
-import sqlite3
-import sys
-
-import requests
-
-
-def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit("Usage: migrate_queue_to_d1.py <path-to-old-queue.db>")
-
-    db_path = sys.argv[1]
-    api_url = os.environ["QUEUE_API_URL"].rstrip("/")
-    token = os.environ["QUEUE_API_TOKEN"]
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM queue").fetchall()
-    conn.close()
-
-    print(f"Found {len(rows)} row(s) in {db_path}")
-
-    claim_items = [
-        {
-            "item_id": r["item_id"],
-            "source": r["source"],
-            "comments_url": r["comments_url"],
-            "article_url": r["article_url"],
-        }
-        for r in rows
-    ]
-    resp = requests.post(f"{api_url}/claim", json={"items": claim_items}, headers=headers, timeout=30)
-    resp.raise_for_status()
-    print(f"Claimed {len(claim_items)} item(s) in D1")
-
-    complete_items = [
-        {
-            "item_id": r["item_id"],
-            "status": r["status"],
-            "title": r["title"],
-            "is_selfpost": bool(r["is_selfpost"]),
-            "filename": r["filename"],
-            "last_error": r["last_error"],
-        }
-        for r in rows
-    ]
-    resp = requests.post(
-        f"{api_url}/complete", json={"items": complete_items}, headers=headers, timeout=30
-    )
-    resp.raise_for_status()
-    print(f"Reported status/title/filename for {len(complete_items)} item(s)")
-
-    filenames = [r["filename"] for r in rows if r["filename"]]
-    print(f"\n{len(filenames)} .md file(s) still need to move by hand into the new output_dir:")
-    print("  mv hn_this_week/*.md \"<your RAW folder path>/\"")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-- [ ] **Step 2: Run it against the real deployed Worker (manual, one-time)**
-
-```bash
-QUEUE_API_URL=https://archivore-queue.<your-subdomain>.workers.dev \
-QUEUE_API_TOKEN=<your-real-token> \
-python3 scripts/migrate_queue_to_d1.py hn_this_week/queue.db
-```
-
-Expected: prints the row count claimed/reported, then the `mv` reminder.
-
-- [ ] **Step 3: Move the existing Markdown files by hand**
-
-```bash
-mkdir -p "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Todd's Obsidian Vault/Archivore/Raw"
-mv hn_this_week/*.md "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Todd's Obsidian Vault/Archivore/Raw/"
-```
-
-- [ ] **Step 4: Retire the old local queue database and directory**
-
-```bash
-rm hn_this_week/queue.db
-rmdir hn_this_week 2>/dev/null || echo "hn_this_week/ not empty — check for leftover files before removing"
-```
-
-- [ ] **Step 5: Commit the script**
-
-```bash
-git add scripts/migrate_queue_to_d1.py
-git commit -m "Add one-off queue.db -> D1 migration script"
-```
-
----
-
-### Task 6: Update README
+### Task 5: Update README
 
 **Files:**
 - Modify: `README.md`
@@ -1299,7 +1188,7 @@ git commit -m "Document multi-machine queue setup in README"
 
 ---
 
-### Task 7: End-to-end verification against the real deployed Worker
+### Task 6: End-to-end verification against the real deployed Worker
 
 This task has no automated test — it's the manual proof that the whole system works together, using the real Worker from the other plan.
 
@@ -1351,9 +1240,9 @@ Expected: `.md` files and `index.md` present.
 
 ## Self-Review Notes
 
-- **Spec coverage:** batch discover-then-claim (Task 4's `discover_items`/`_pipeline`), two-phase `/complete` flush (Task 4's `_pipeline` calling `queue_api.complete` after phase 1 and after phase 2), configurable `output_dir` default (Task 1), no offline fallback (Task 4 has no try/except around `queue_api` calls — a failure propagates and the run fails loudly, matching the spec's Non-goals), migration steps (Task 5), README documentation (Task 6).
-- **Gap found and closed while writing this plan:** the spec's D1 schema includes `title` and `is_selfpost` columns, but the spec's `/complete` payload sketch didn't explicitly say these fields travel with it — without them, `GET /items` could never return a title for `write_index` to use. Task 1's `CompleteItem` and Task 3's `fetcher.fetch_article` both carry `title`/`is_selfpost` through explicitly; Task 7 Step 4 exists specifically to verify this in the running system, since it's the one gap invented during planning rather than the brainstorming phase.
-- **Placeholder scan:** every step has complete code; the one legitimately manual, non-automatable task (Task 7) is a verification task, not a "TODO: implement" gap.
+- **Spec coverage:** batch discover-then-claim (Task 4's `discover_items`/`_pipeline`), two-phase `/complete` flush (Task 4's `_pipeline` calling `queue_api.complete` after phase 1 and after phase 2), configurable `output_dir` default (Task 1), no offline fallback (Task 4 has no try/except around `queue_api` calls — a failure propagates and the run fails loudly, matching the spec's Non-goals), README documentation (Task 5). Migration/cutover is intentionally out of scope for this plan — see the Global Constraints note above and the separate `2026-08-30-queue-migration-cutover.md` plan.
+- **Gap found and closed while writing this plan:** the spec's D1 schema includes `title` and `is_selfpost` columns, but the spec's `/complete` payload sketch didn't explicitly say these fields travel with it — without them, `GET /items` could never return a title for `write_index` to use. Task 1's `CompleteItem` and Task 3's `fetcher.fetch_article` both carry `title`/`is_selfpost` through explicitly; Task 6 Step 4 exists specifically to verify this in the running system, since it's the one gap invented during planning rather than the brainstorming phase.
+- **Placeholder scan:** every step has complete code; the one legitimately manual, non-automatable task (Task 6) is a verification task, not a "TODO: implement" gap.
 - **Type consistency:** `ClaimItem`/`ClaimResult`/`CompleteItem` (Task 1) are used with identical field names throughout `queue_api.py` (Task 2), `fetcher.py` (Task 3), and `run.py` (Task 4) — checked by re-reading each task's code against Task 1's definitions.
 
 ---
