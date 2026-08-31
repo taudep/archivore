@@ -81,6 +81,11 @@ class Config:
     smtp_password: str | None = None
     email_to: str | None = None
     email_from: str | None = None
+    # Generic hook, run via shell after a successful scrape that produced new
+    # files. Not Claude-specific — any command works. Intended for exactly one
+    # designated machine to chain wiki ingest; other machines leave it unset
+    # and stay safe since ingest is idempotent per raw file.
+    post_run_cmd: str | None = None
 
 
 def xdg_config_path() -> Path:

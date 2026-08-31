@@ -491,6 +491,27 @@ def _send_email(cfg: Config, result: RunResult) -> None:
         console.print(f"[yellow]Email notification failed: {e}[/yellow]")
 
 
+def _run_post_run_cmd(cfg: Config) -> None:
+    """Shell out to cfg.post_run_cmd if configured — e.g. to chain wiki ingest
+    on the one designated machine. Never raises; failures are logged only, so
+    a broken hook never fails the scrape it runs after."""
+    if not cfg.post_run_cmd:
+        return
+    console.print(f"\n[bold]Running post-run command[/bold]: {cfg.post_run_cmd}")
+    try:
+        result = subprocess.run(
+            cfg.post_run_cmd, shell=True, capture_output=True, text=True, timeout=600
+        )
+        if result.returncode != 0:
+            console.print(
+                f"[yellow]post_run_cmd exited {result.returncode}[/yellow]"
+            )
+            if result.stderr:
+                console.print(result.stderr[:300])
+    except (OSError, subprocess.SubprocessError) as e:
+        console.print(f"[yellow]post_run_cmd failed: {e}[/yellow]")
+
+
 def run(
     cfg: Config, days_override: int | None = None, skip_embed: bool = False
 ) -> None:
@@ -506,3 +527,5 @@ def run(
 
     if cfg.smtp_host and cfg.email_to:
         _send_email(cfg, result)
+
+    _run_post_run_cmd(cfg)

@@ -21,6 +21,11 @@ def test_queue_api_fields_default_to_none():
     assert cfg.queue_api_token is None
 
 
+def test_post_run_cmd_defaults_to_none():
+    cfg = Config()
+    assert cfg.post_run_cmd is None
+
+
 class TestQueueApiTokenEnvFallback:
     def test_falls_back_to_env_var_when_no_config_file_sets_it(self, monkeypatch):
         monkeypatch.setenv("ARCHIVORE_QUEUE_API_TOKEN", "env-token")

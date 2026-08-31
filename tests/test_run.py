@@ -3,7 +3,12 @@
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from archivore.commands.run import discover_items, indexable_rows, partition_claims
+from archivore.commands.run import (
+    _run_post_run_cmd,
+    discover_items,
+    indexable_rows,
+    partition_claims,
+)
 from archivore.config import Config
 from archivore.models import HistoryRow
 
@@ -96,3 +101,30 @@ class TestDiscoverItemsRedditToggle:
         assert len(items) == 1
         assert items[0]["source"] == "reddit"
         assert visited_at["abc123"] == "2026-08-30T12:00:00+00:00"
+
+
+class TestRunPostRunCmd:
+    def test_noop_when_unset(self):
+        cfg = Config()
+        with patch("archivore.commands.run.subprocess.run") as mock_run:
+            _run_post_run_cmd(cfg)
+        mock_run.assert_not_called()
+
+    def test_invokes_configured_command(self):
+        cfg = Config()
+        cfg.post_run_cmd = 'claude -p "/taude ingest"'
+        with patch("archivore.commands.run.subprocess.run") as mock_run:
+            _run_post_run_cmd(cfg)
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        assert args[0] == 'claude -p "/taude ingest"'
+        assert kwargs.get("shell") is True
+
+    def test_failure_is_swallowed_not_raised(self):
+        cfg = Config()
+        cfg.post_run_cmd = "false"
+        with patch(
+            "archivore.commands.run.subprocess.run",
+            side_effect=OSError("boom"),
+        ):
+            _run_post_run_cmd(cfg)  # must not raise
