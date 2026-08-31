@@ -32,6 +32,7 @@ def _yaml_str(value: str) -> str:
 
 def render_frontmatter(
     title: str,
+    item_id: str,
     article_url: str,
     comments_url: str,
     source: str,
@@ -45,11 +46,16 @@ def render_frontmatter(
     (``visited_at``, a ``HistoryRow.last_visited_at`` timestamp) — not
     today's date and not the article's own publish date, so the vault
     reflects when *you* read something rather than when it ran.
+
+    ``item_id`` lives here (as ``id``) rather than in the filename, since
+    filenames are now ``<timestamp>-<title>.md`` for readability and
+    chronological sorting on disk.
     """
     authors = [a.strip() for a in author.split(",") if a.strip()] if author else []
     lines = [
         "---",
         f"title: {_yaml_str(title)}",
+        f"id: {_yaml_str(item_id)}",
         f"source: {_yaml_str(article_url)}",
         "author:",
     ]
@@ -78,11 +84,45 @@ def html_to_markdown(html_text: str) -> str:
     return h.handle(html_text)
 
 
-def safe_slug(title: str, item_id: str) -> str:
-    """Build a filesystem-safe ``<id>-<slug>.md`` filename from a title."""
-    slug = re.sub(r"[^\w\s-]", "", title.lower())
-    slug = re.sub(r"[\s_]+", "-", slug).strip("-")[:60]
-    return f"{item_id}-{slug}.md"
+_FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+_FRONTMATTER_ID_RE = re.compile(r'^id: "(.*)"$', re.MULTILINE)
+
+
+def sanitize_title_for_filename(title: str) -> str:
+    """Strip characters invalid in filenames while keeping the title
+    otherwise human-readable — spaces and normal capitalization stay."""
+    cleaned = _FILENAME_UNSAFE_RE.sub("", title)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:80].rstrip(" .")
+
+
+def build_filename(
+    title: str, visited_at: str, disambiguator: str | None = None
+) -> str:
+    """``<YYYYMMDD>-<title>.md`` — timestamp first so the vault sorts by
+    capture date on disk. Uses the same date as front matter's ``created``
+    (``visited_at[:10]``, the browser-history visit date), so filename and
+    front matter always agree.
+
+    ``disambiguator`` (an item_id) is only appended on an actual filename
+    collision with a *different* item — see ``write_article_file``.
+    """
+    ts = visited_at[:10].replace("-", "")
+    name = f"{ts}-{sanitize_title_for_filename(title)}"
+    if disambiguator:
+        name += f" ({disambiguator})"
+    return f"{name}.md"
+
+
+def _file_belongs_to(path: Path, item_id: str) -> bool:
+    """True if ``path`` doesn't exist yet, or its front matter's ``id``
+    matches ``item_id`` (a retry/re-fetch of the same item, safe to
+    overwrite) rather than a different item that happens to collide."""
+    if not path.is_file():
+        return True
+    text = path.read_text(encoding="utf-8", errors="replace")
+    m = _FRONTMATTER_ID_RE.search(text)
+    return m is not None and m.group(1) == item_id
 
 
 def md_escape(text: str) -> str:
@@ -108,7 +148,14 @@ def write_article_file(
     matter, and return its filename."""
     lines = [
         render_frontmatter(
-            title, article_url, comments_url, source, visited_at, author, published
+            title,
+            item_id,
+            article_url,
+            comments_url,
+            source,
+            visited_at,
+            author,
+            published,
         ),
         "",
         f"# {title}",
@@ -121,7 +168,10 @@ def write_article_file(
         lines += [fetch_note.strip(), ""]
     if md_body:
         lines += ["---", "", md_body]
-    filename = safe_slug(title, item_id)
+
+    filename = build_filename(title, visited_at)
+    if not _file_belongs_to(output_dir / filename, item_id):
+        filename = build_filename(title, visited_at, disambiguator=item_id)
     (output_dir / filename).write_text("\n".join(lines), encoding="utf-8")
     return filename
 
