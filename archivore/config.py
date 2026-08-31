@@ -60,6 +60,9 @@ class Config:
     reddit_subreddits: set[str] = field(
         default_factory=lambda: set(DEFAULT_REDDIT_SUBREDDITS)
     )
+    # Off by default: old.reddit.com scraping has no real auth story yet and
+    # is prone to being blocked/rate-limited. Flip on once that's sorted.
+    enable_reddit: bool = False
     digest_days: int = 7
     hn_delay: float = 0.5
     meta_delay: float = 1.5

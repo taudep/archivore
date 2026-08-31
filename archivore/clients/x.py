@@ -35,6 +35,9 @@ def resolve(xid: str, kind: str, original_url: str) -> ResolvedItem:
     og_title = extract_og(page, "title") or ""
     og_desc = extract_og(page, "description") or ""
 
+    handle_m = re.search(r"(?:x|twitter)\.com/([^/]+)/", url, re.I)
+    author = f"@{handle_m.group(1)}" if handle_m else None
+
     # X articles: the page <title> tag is more useful than og:title
     if kind == "article":
         t = re.search(r"<title>([^<]{10,})</title>", page, re.I)
@@ -51,13 +54,12 @@ def resolve(xid: str, kind: str, original_url: str) -> ResolvedItem:
     elif content:
         title = content[:80].rstrip() + ("…" if len(content) > 80 else "")
     else:
-        handle_m = re.search(r"x\.com/([^/]+)/", url, re.I)
-        handle = f"@{handle_m.group(1)}" if handle_m else "X user"
-        title = f"{handle} — {kind}"
+        title = f"{author or 'X user'} — {kind}"
 
     return ResolvedItem(
         title=title,
         article_url=url,
         is_selfpost=True,
         selftext=content or _JS_NOTE,
+        author=author,
     )

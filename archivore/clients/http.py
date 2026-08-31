@@ -53,20 +53,53 @@ def aiohttp_ssl_ctx() -> ssl.SSLContext:
     return ctx
 
 
+def extract_meta_tag(html_text: str, name: str) -> str | None:
+    """Extract a ``<meta property="name" ...>`` or ``<meta name="name" ...>``
+    tag's ``content`` value, regardless of attribute order."""
+    pattern_a = (
+        rf'<meta[^>]+(?:property|name)="{re.escape(name)}"[^>]+content="([^"]*)"'
+    )
+    pattern_b = (
+        rf'<meta[^>]+content="([^"]*)"[^>]+(?:property|name)="{re.escape(name)}"'
+    )
+    m = re.search(pattern_a, html_text, re.I) or re.search(pattern_b, html_text, re.I)
+    return html.unescape(m.group(1).strip()) if m else None
+
+
 def extract_og(html_text: str, tag: str) -> str | None:
     """Extract an ``og:<tag>`` or ``twitter:<tag>`` meta tag value."""
     for attr in (f"og:{tag}", f"twitter:{tag}"):
-        pattern_a = (
-            rf'<meta[^>]+(?:property|name)="{re.escape(attr)}"'
-            rf'[^>]+content="([^"]*)"'
-        )
-        pattern_b = (
-            rf'<meta[^>]+content="([^"]*)"'
-            rf'[^>]+(?:property|name)="{re.escape(attr)}"'
-        )
-        m = re.search(pattern_a, html_text, re.I) or re.search(
-            pattern_b, html_text, re.I
-        )
-        if m:
-            return html.unescape(m.group(1).strip())
+        value = extract_meta_tag(html_text, attr)
+        if value:
+            return value
+    return None
+
+
+_AUTHOR_META_NAMES = ("article:author", "author", "parsely-author")
+_PUBLISHED_META_NAMES = (
+    "article:published_time",
+    "date",
+    "pubdate",
+    "parsely-pub-date",
+)
+
+
+def extract_page_author(html_text: str) -> str | None:
+    """Best-effort author for an article page, tried in order of
+    reliability: explicit article authorship tags first, generic ``author``
+    meta last."""
+    for name in _AUTHOR_META_NAMES:
+        value = extract_meta_tag(html_text, name)
+        if value:
+            return value
+    return None
+
+
+def extract_page_published(html_text: str) -> str | None:
+    """Best-effort publish date for an article page, as whatever the page's
+    own metadata reports (commonly full ISO 8601, sometimes date-only)."""
+    for name in _PUBLISHED_META_NAMES:
+        value = extract_meta_tag(html_text, name)
+        if value:
+            return value
     return None

@@ -33,9 +33,9 @@ Snapshots your open tabs and 90 days of browser history (Chrome + Firefox) into 
 
 ### `archivore run`
 
-Scans browser history since the last successful run (tracked in the user config, not a fixed schedule), pulls out HN, Reddit, and X URLs, fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. Instead of a local queue, it coordinates with the [archivore-queue Cloudflare Worker + D1 API](#multi-machine-sync-archivore-queue) — a batch `/claim` before fetching, a `/complete` flush after each phase, and a final `/items` to rebuild the index from global state — so the same article is never fetched twice, even across multiple machines. The qmd semantic index is refreshed automatically after each run.
+Scans browser history since the last successful run (tracked in the user config, not a fixed schedule), pulls out HN and X URLs (Reddit is currently disabled — see below), fetches the linked articles, converts them to Markdown, and writes an index. Downloads run concurrently with a Rich live TUI. Instead of a local queue, it coordinates with the [archivore-queue Cloudflare Worker + D1 API](#multi-machine-sync-archivore-queue) — a batch `/claim` before fetching, a `/complete` flush after each phase, and a final `/items` to rebuild the index from global state — so the same article is never fetched twice, even across multiple machines. The qmd semantic index is refreshed automatically after each run.
 
-Reddit posts are filtered by subreddit — only `reddit_subreddits` (in the config, case-insensitive) get ingested, so browsing off-topic subreddits doesn't pollute the knowledge base. Set it to an empty list to disable the filter.
+**Reddit is off by default** (`enable_reddit: false`) — the old.reddit.com scraping approach it uses has no real auth story yet and is prone to being blocked or rate-limited. The code is all still there (`archivore/clients/reddit.py`, `sources.extract_reddit_items`); set `enable_reddit: true` in config to turn it back on once that's sorted. When enabled, posts are filtered by subreddit — only `reddit_subreddits` (in the config, case-insensitive) get ingested, so browsing off-topic subreddits doesn't pollute the knowledge base. Set it to an empty list to disable that filter without disabling Reddit entirely.
 
 It also appends a summary (counts + newly-saved titles) to a log file every time, and can send
 a native macOS notification and/or an email when it finishes — both inert until configured, so
@@ -204,8 +204,17 @@ npx tsc --noEmit       # type-check
 - [x] Auto-refresh the index after each run
 - [x] Multi-machine dedup coordination API (Cloudflare Worker + D1) — built, tested, deployed
 - [x] Wire `archivore run` to the coordination API, retiring the local per-machine queue
+- [ ] Record the capturing machine's `hostname` on each item in the `taude-archivore` D1 database —
+      whichever client instance locks (claims) an article first is the one that captures it, so
+      stamp the hostname at claim time for provenance/debugging across multi-machine runs.
 - [ ] Topic-based wiki directory structure (auto-organize articles by tag/domain)
 - [ ] Auto-link related articles during ingestion
+- [ ] LLM-based auto-tagging: call a configurable OpenAI-compatible chat endpoint to generate
+      `tags` for each captured article's front matter. New config: `llm_endpoint` (the base URL)
+      and `llm_api_key`, with the key overridable via an `ARCHIVORE_LLM_API_KEY` env var — same
+      config-file-wins-over-env-var pattern as `queue_api_token`/`ARCHIVORE_QUEUE_API_TOKEN`. The
+      endpoint is meant to be reused for more than tagging once this lands (summarization, etc.),
+      so keep it a generic chat-completion client rather than a tagging-only helper.
 
 ### Phase 3 — AI Content Generation (Claude API)
 
@@ -227,6 +236,7 @@ npx tsc --noEmit       # type-check
 - [ ] AI-assisted reply drafts for review
 - [ ] Follow/discover accounts in areas of interest
 - [ ] Engagement metrics dashboard (Markdown report)
+- [ ] Daily pretty-printed report emailed via Gmail (summary of the day's captured items)
 
 ## Architecture
 

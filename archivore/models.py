@@ -38,12 +38,20 @@ class ResolvedItem:
 
     ``selftext`` is Markdown body content for self-posts (written directly in
     phase 1); ``None`` means the article URL should be fetched in phase 2.
+
+    ``author``/``published`` are only populated here for self-posts, where
+    the platform itself is the source of truth (the submitter, the post
+    time). For link posts they're left ``None`` and phase 2 fills them in
+    from the fetched article's own metadata instead — the HN/Reddit
+    submitter is not the article's author.
     """
 
     title: str | None
     article_url: str
     is_selfpost: bool
     selftext: str | None = None
+    author: str | None = None
+    published: str | None = None
 
 
 @dataclass

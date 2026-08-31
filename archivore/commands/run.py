@@ -51,15 +51,24 @@ from archivore.timeutil import days_ago
 console = Console()
 
 
-def discover_items(cfg: Config, since: datetime) -> list[ClaimItem]:
+def discover_items(
+    cfg: Config, since: datetime
+) -> tuple[list[ClaimItem], dict[str, str]]:
     """Scan browser history since ``since`` and extract every HN/Reddit/X
-    item — fully, in memory — before any coordination-API call happens."""
+    item — fully, in memory — before any coordination-API call happens.
+
+    Also returns ``{item_id: visited_at}`` — the browser-history visit
+    timestamp for each item, kept out of ``ClaimItem`` since that type is
+    the wire format sent to the coordination API, which has no use for it.
+    """
     history = get_all_history(since)
     items: list[ClaimItem] = []
+    visited_at: dict[str, str] = {}
 
     hn_items = extract_hn_items(history)
     console.print(f"  HN:     [cyan]{len(hn_items)}[/cyan] item(s)")
-    for item_id in hn_items:
+    for item_id, row in hn_items.items():
+        visited_at[item_id] = row["last_visited_at"]
         items.append(
             ClaimItem(
                 item_id=item_id,
@@ -69,34 +78,41 @@ def discover_items(cfg: Config, since: datetime) -> list[ClaimItem]:
             )
         )
 
-    reddit_items = extract_reddit_items(history, cfg.reddit_subreddits)
-    console.print(f"  Reddit: [cyan]{len(reddit_items)}[/cyan] item(s)")
-    for post_id, orig_url in reddit_items.items():
+    if cfg.enable_reddit:
+        reddit_items = extract_reddit_items(history, cfg.reddit_subreddits)
+        console.print(f"  Reddit: [cyan]{len(reddit_items)}[/cyan] item(s)")
+    else:
+        reddit_items = {}
+        console.print("  Reddit: [yellow]disabled[/yellow] (enable_reddit: false)")
+    for post_id, row in reddit_items.items():
+        visited_at[post_id] = row["last_visited_at"]
         # Original URL goes in comments_url so phase 1 can rebuild old.reddit
         items.append(
             ClaimItem(
                 item_id=post_id,
                 source="reddit",
-                comments_url=orig_url,
+                comments_url=row["url"],
                 article_url=None,
             )
         )
 
     x_items = extract_x_items(history)
     console.print(f"  X:      [cyan]{len(x_items)}[/cyan] item(s)")
-    for xid, (kind, orig_url) in x_items.items():
+    for xid, (kind, row) in x_items.items():
+        item_id = f"x_{xid}"
+        visited_at[item_id] = row["last_visited_at"]
         # kind|orig_url goes in article_url until phase 1 resolves it; the x_
         # prefix keeps numeric tweet IDs from colliding with HN item IDs
         items.append(
             ClaimItem(
-                item_id=f"x_{xid}",
+                item_id=item_id,
                 source="x",
-                comments_url=orig_url,
-                article_url=f"{kind}|{orig_url}",
+                comments_url=row["url"],
+                article_url=f"{kind}|{row['url']}",
             )
         )
 
-    return items
+    return items, visited_at
 
 
 def partition_claims(results: list[ClaimResult], max_retries: int) -> list[str]:
@@ -109,6 +125,21 @@ def partition_claims(results: list[ClaimResult], max_retries: int) -> list[str]:
         elif r["status"] == "failed" and r["retries"] < max_retries:
             to_fetch.append(r["item_id"])
     return to_fetch
+
+
+def indexable_rows(all_items: list[dict], output_dir: Path) -> list[dict]:
+    """Items eligible for the index: completed with a filename that still
+    exists on disk. D1 is the source of truth for *coordination* state, but
+    the vault is hand-edited (files get deleted), so the index must not
+    link to a file that's no longer there.
+    """
+    return [
+        i
+        for i in all_items
+        if i["status"] in ("done", "skipped")
+        and i["filename"]
+        and (output_dir / i["filename"]).is_file()
+    ]
 
 
 def _resolve_one(item: ClaimItem, cfg: Config) -> ResolvedItem | None:
@@ -133,7 +164,7 @@ def _resolve_one(item: ClaimItem, cfg: Config) -> ResolvedItem | None:
 
 
 def phase1_resolve(
-    to_fetch: list[ClaimItem], cfg: Config
+    to_fetch: list[ClaimItem], cfg: Config, visited_at_by_id: dict[str, str]
 ) -> tuple[list[CompleteItem], list[dict]]:
     """Resolve metadata for every claimed item.
 
@@ -183,6 +214,10 @@ def phase1_resolve(
                     claim_item["comments_url"],
                     item.selftext,
                     "",
+                    source=claim_item["source"],
+                    visited_at=visited_at_by_id[item_id],
+                    author=item.author,
+                    published=item.published,
                 )
                 completions.append(
                     CompleteItem(
@@ -202,6 +237,9 @@ def phase1_resolve(
                         "title": item.title,
                         "article_url": item.article_url,
                         "comments_url": claim_item["comments_url"],
+                        "visited_at": visited_at_by_id[item_id],
+                        "author": item.author,
+                        "published": item.published,
                     }
                 )
         except Exception as e:
@@ -342,7 +380,7 @@ def _pipeline(
 
     since, why = _resolve_since(cfg, days_override)
     console.print(f"[bold]Scanning browser history[/bold] ({why})…")
-    discovered = discover_items(cfg, since)
+    discovered, visited_at_by_id = discover_items(cfg, since)
     console.print(f"Discovered [cyan]{len(discovered)}[/cyan] item(s) from history\n")
 
     by_id = {i["item_id"]: i for i in discovered}
@@ -351,16 +389,14 @@ def _pipeline(
     to_fetch = [by_id[iid] for iid in to_fetch_ids]
     console.print(f"Claimed [cyan]{len(to_fetch)}[/cyan] new/retryable item(s)\n")
 
-    phase1_completions, to_download = phase1_resolve(to_fetch, cfg)
+    phase1_completions, to_download = phase1_resolve(to_fetch, cfg, visited_at_by_id)
     queue_api.complete(cfg, phase1_completions)
 
     phase2_completions = asyncio.run(phase2_download(to_download, cfg))
     queue_api.complete(cfg, phase2_completions)
 
     all_items = queue_api.list_items(cfg)
-    done_rows = [
-        i for i in all_items if i["status"] in ("done", "skipped") and i["filename"]
-    ]
+    done_rows = indexable_rows(all_items, cfg.output_dir)
     index_path, n = write_index(cfg.output_dir, done_rows, since, run_start)
 
     done = sum(1 for i in all_items if i["status"] == "done")

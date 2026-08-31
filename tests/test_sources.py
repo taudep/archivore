@@ -69,6 +69,26 @@ class TestExtractReddit:
         items = extract_reddit_items(rows)
         assert set(items) == {"abc123", "xyz789"}
 
+    def test_returns_full_history_row_incl_visited_at(self):
+        rows = [
+            HistoryRow(
+                url="https://www.reddit.com/r/python/comments/abc123/title/",
+                title="t",
+                visit_count=1,
+                last_visited_at="2026-08-29T10:00:00+00:00",
+            )
+        ]
+        items = extract_reddit_items(rows)
+        assert items["abc123"]["last_visited_at"] == "2026-08-29T10:00:00+00:00"
+        assert items["abc123"]["url"] == rows[0]["url"]
+
+    def test_most_visited_row_wins_for_visited_at_too(self):
+        rows = [
+            row("https://www.reddit.com/r/python/comments/abc123/title/", 2),
+            row("https://www.reddit.com/r/python/comments/abc123/title/", 7),
+        ]
+        assert extract_reddit_items(rows)["abc123"]["visit_count"] == 7
+
     def test_no_allowlist_keeps_everything(self):
         rows = [row("https://www.reddit.com/r/python/comments/abc123/title/")]
         assert set(extract_reddit_items(rows, None)) == {"abc123"}
@@ -107,3 +127,17 @@ class TestExtractX:
             row("https://x.com/a/article/5"),
         ]
         assert extract_x_items(rows)["5"][0] == "article"
+
+    def test_returns_full_history_row_incl_visited_at(self):
+        rows = [
+            HistoryRow(
+                url="https://x.com/karpathy/status/111",
+                title="t",
+                visit_count=1,
+                last_visited_at="2026-08-29T10:00:00+00:00",
+            )
+        ]
+        kind, r = extract_x_items(rows)["111"]
+        assert kind == "tweet"
+        assert r["last_visited_at"] == "2026-08-29T10:00:00+00:00"
+        assert r["url"] == rows[0]["url"]

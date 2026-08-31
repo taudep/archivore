@@ -11,7 +11,12 @@ from pathlib import Path
 
 import aiohttp
 
-from archivore.clients.http import BROWSER_HEADERS, aiohttp_ssl_ctx
+from archivore.clients.http import (
+    BROWSER_HEADERS,
+    aiohttp_ssl_ctx,
+    extract_page_author,
+    extract_page_published,
+)
 from archivore.models import CompleteItem
 from archivore.render import html_to_markdown, write_article_file
 
@@ -32,18 +37,35 @@ async def fetch_article(
 ) -> CompleteItem:
     """Download one article, convert to Markdown, and return its outcome.
 
-    ``item`` needs keys: item_id, title, article_url, comments_url.
+    ``item`` needs keys: item_id, title, article_url, comments_url, source,
+    visited_at, and optionally author/published (a self-post fallback from
+    resolve() — always None here in practice, since phase 2 only handles
+    link posts).
     """
     item_id = item["item_id"]
     title = item["title"]
     article_url = item["article_url"]
     comments_url = item["comments_url"]
+    source = item["source"]
+    visited_at = item["visited_at"]
+    resolved_author = item.get("author")
+    resolved_published = item.get("published")
 
     state[item_id] = ("⏳", "fetching…")
 
     def _skip(note: str, error: str, icon_status: str) -> CompleteItem:
         filename = write_article_file(
-            output_dir, item_id, title, article_url, comments_url, note, ""
+            output_dir,
+            item_id,
+            title,
+            article_url,
+            comments_url,
+            note,
+            "",
+            source=source,
+            visited_at=visited_at,
+            author=resolved_author,
+            published=resolved_published,
         )
         state[item_id] = ("⛔", icon_status)
         return CompleteItem(
@@ -90,7 +112,17 @@ async def fetch_article(
                 page = await resp.text(errors="replace")
                 md_body = html_to_markdown(page)
                 filename = write_article_file(
-                    output_dir, item_id, title, article_url, comments_url, "", md_body
+                    output_dir,
+                    item_id,
+                    title,
+                    article_url,
+                    comments_url,
+                    "",
+                    md_body,
+                    source=source,
+                    visited_at=visited_at,
+                    author=extract_page_author(page) or resolved_author,
+                    published=extract_page_published(page) or resolved_published,
                 )
                 state[item_id] = ("✅", "saved")
                 return CompleteItem(

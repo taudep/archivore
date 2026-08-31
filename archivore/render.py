@@ -15,6 +15,58 @@ SOURCE_LABELS = {
     "x": "X / Twitter",
 }
 
+# Key for the discussion-thread link in front matter, per source. X has no
+# separate discussion page — the tweet URL already is the "source" — so it's
+# omitted there.
+_DISCUSSION_KEYS = {
+    "hn": "hackernews-discussion",
+    "reddit": "reddit-discussion",
+}
+
+
+def _yaml_str(value: str) -> str:
+    """Quote a YAML scalar, escaping backslashes and embedded quotes."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def render_frontmatter(
+    title: str,
+    article_url: str,
+    comments_url: str,
+    source: str,
+    visited_at: str,
+    author: str | None,
+    published: str | None,
+) -> str:
+    """Build an Obsidian-clipper-style YAML front matter block.
+
+    ``created`` is always the date the item was viewed in the browser
+    (``visited_at``, a ``HistoryRow.last_visited_at`` timestamp) — not
+    today's date and not the article's own publish date, so the vault
+    reflects when *you* read something rather than when it ran.
+    """
+    authors = [a.strip() for a in author.split(",") if a.strip()] if author else []
+    lines = [
+        "---",
+        f"title: {_yaml_str(title)}",
+        f"source: {_yaml_str(article_url)}",
+        "author:",
+    ]
+    lines += [f'  - "[[{a}]]"' for a in authors]
+    lines += [
+        f"published: {published or ''}",
+        f"created: {visited_at[:10]}",
+        "description:",
+        "tags:",
+        "  - clippings",
+    ]
+    discussion_key = _DISCUSSION_KEYS.get(source)
+    if discussion_key:
+        lines.append(f"{discussion_key}: {comments_url}")
+    lines.append("---")
+    return "\n".join(lines)
+
 
 def html_to_markdown(html_text: str) -> str:
     """Convert an HTML document or fragment to Markdown."""
@@ -46,9 +98,19 @@ def write_article_file(
     comments_url: str,
     fetch_note: str,
     md_body: str,
+    *,
+    source: str,
+    visited_at: str,
+    author: str | None = None,
+    published: str | None = None,
 ) -> str:
-    """Write one article file and return its filename."""
+    """Write one article file, with Obsidian-clipper-style YAML front
+    matter, and return its filename."""
     lines = [
+        render_frontmatter(
+            title, article_url, comments_url, source, visited_at, author, published
+        ),
+        "",
         f"# {title}",
         "",
         f"- **Article:** [{article_url}]({article_url})",

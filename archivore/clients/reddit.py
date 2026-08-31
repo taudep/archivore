@@ -44,9 +44,14 @@ def resolve(post_id: str, original_url: str) -> ResolvedItem:
     )
     selftext_html = selftext_m.group(1) if selftext_m else ""
     selftext_md = html_to_markdown(selftext_html) if selftext_html.strip() else og_desc
+
+    author_m = re.search(r'class="author"[^>]*>([^<]+)<', page, re.I)
+    time_m = re.search(r'<time[^>]+datetime="([^"]+)"', page, re.I)
     return ResolvedItem(
         title=title,
         article_url=comments_url,
         is_selfpost=True,
         selftext=selftext_md,
+        author=author_m.group(1).strip() if author_m else None,
+        published=time_m.group(1)[:10] if time_m else None,
     )

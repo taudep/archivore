@@ -76,15 +76,16 @@ def extract_hn_items(rows: list[HistoryRow]) -> dict[str, HistoryRow]:
 
 def extract_reddit_items(
     rows: list[HistoryRow], allowed_subreddits: set[str] | None = None
-) -> dict[str, str]:
-    """Return ``{post_id: url}`` for reddit.com comment-thread URLs.
+) -> dict[str, HistoryRow]:
+    """Return ``{post_id: history_row}`` for reddit.com comment-thread URLs
+    — the most-visited row per post, so callers can recover the URL and the
+    date it was last viewed.
 
     If ``allowed_subreddits`` is given (matched case-insensitively), posts
     from any other subreddit are skipped. An empty or ``None`` set means no
     filtering.
     """
-    items: dict[str, str] = {}
-    best_counts: dict[str, int] = {}
+    items: dict[str, HistoryRow] = {}
     allowed = {s.lower() for s in allowed_subreddits} if allowed_subreddits else None
     for row in rows:
         p = urlparse(row["url"])
@@ -96,9 +97,8 @@ def extract_reddit_items(
         subreddit, post_id = m.group(1), m.group(2)
         if allowed is not None and subreddit.lower() not in allowed:
             continue
-        if post_id not in items or row["visit_count"] > best_counts[post_id]:
-            items[post_id] = row["url"]
-            best_counts[post_id] = row["visit_count"]
+        if post_id not in items or row["visit_count"] > items[post_id]["visit_count"]:
+            items[post_id] = row
     return items
 
 
@@ -114,13 +114,15 @@ _X_SKIP_PATHS = (
 )
 
 
-def extract_x_items(rows: list[HistoryRow]) -> dict[str, tuple[str, str]]:
-    """Return ``{id: (kind, url)}`` for x.com /status/ and /article/ URLs.
+def extract_x_items(rows: list[HistoryRow]) -> dict[str, tuple[str, HistoryRow]]:
+    """Return ``{id: (kind, history_row)}`` for x.com /status/ and /article/
+    URLs, carrying the matching row so callers can recover the URL and the
+    date it was last viewed.
 
     ``kind`` is ``"tweet"`` or ``"article"``; article wins when the same ID
     appears as both.
     """
-    items: dict[str, tuple[str, str]] = {}
+    items: dict[str, tuple[str, HistoryRow]] = {}
     for row in rows:
         p = urlparse(row["url"])
         if p.netloc.replace("www.", "") not in ("x.com", "twitter.com"):
@@ -141,6 +143,6 @@ def extract_x_items(rows: list[HistoryRow]) -> dict[str, tuple[str, str]]:
             continue
 
         if xid not in items or (kind == "article" and items[xid][0] == "tweet"):
-            items[xid] = (kind, row["url"])
+            items[xid] = (kind, row)
 
     return items

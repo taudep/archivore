@@ -1,5 +1,7 @@
 """Hacker News metadata via the Firebase API (no rate limits)."""
 
+from datetime import datetime, timezone
+
 from archivore.clients.http import session
 from archivore.models import ResolvedItem
 
@@ -31,7 +33,18 @@ def resolve(item_id: str) -> ResolvedItem | None:
     if not url:
         text = data.get("text", "")
         note = text or "_Self-post — discussion is at the comments link above._"
+        submitted_at = data.get("time")
+        published = (
+            datetime.fromtimestamp(submitted_at, tz=timezone.utc).strftime("%Y-%m-%d")
+            if submitted_at
+            else None
+        )
         return ResolvedItem(
-            title=title, article_url=comments_url, is_selfpost=True, selftext=note
+            title=title,
+            article_url=comments_url,
+            is_selfpost=True,
+            selftext=note,
+            author=data.get("by"),
+            published=published,
         )
     return ResolvedItem(title=title, article_url=url, is_selfpost=False)

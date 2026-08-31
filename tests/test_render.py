@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from archivore.render import (
     html_to_markdown,
     md_escape,
+    render_frontmatter,
     safe_slug,
     write_article_file,
     write_index,
@@ -39,11 +40,102 @@ def test_write_article_file(tmp_path):
         "https://c.example",
         "",
         "body",
+        source="hn",
+        visited_at="2026-08-30T12:00:00+00:00",
+        author="Jane Doe",
+        published="2026-08-01",
     )
     content = (tmp_path / filename).read_text()
-    assert content.startswith("# My Title")
+    assert content.startswith("---\n")
+    assert "# My Title" in content
     assert "https://a.example" in content
     assert "body" in content
+    assert 'source: "https://a.example"' in content
+    assert '- "[[Jane Doe]]"' in content
+    assert "created: 2026-08-30" in content
+    assert "published: 2026-08-01" in content
+    assert "hackernews-discussion: https://c.example" in content
+
+
+class TestRenderFrontmatter:
+    def test_created_is_visited_at_date_not_published(self):
+        fm = render_frontmatter(
+            "T",
+            "https://a.example",
+            "https://c.example",
+            "hn",
+            "2026-08-30T12:00:00+00:00",
+            None,
+            "2020-06-01",
+        )
+        assert "created: 2026-08-30" in fm
+        assert "published: 2020-06-01" in fm
+
+    def test_multiple_authors_become_separate_wikilinks(self):
+        fm = render_frontmatter(
+            "T",
+            "https://a.example",
+            "https://c.example",
+            "hn",
+            "2026-08-30",
+            "David Leadbeater, Jane Doe",
+            None,
+        )
+        assert '  - "[[David Leadbeater]]"' in fm
+        assert '  - "[[Jane Doe]]"' in fm
+
+    def test_no_author_leaves_author_key_empty(self):
+        fm = render_frontmatter(
+            "T",
+            "https://a.example",
+            "https://c.example",
+            "hn",
+            "2026-08-30",
+            None,
+            None,
+        )
+        lines = fm.splitlines()
+        author_idx = lines.index("author:")
+        assert lines[author_idx + 1].startswith("published:")
+
+    def test_discussion_key_depends_on_source(self):
+        hn_fm = render_frontmatter(
+            "T",
+            "https://a.example",
+            "https://c.example",
+            "hn",
+            "2026-08-30",
+            None,
+            None,
+        )
+        reddit_fm = render_frontmatter(
+            "T",
+            "https://a.example",
+            "https://c.example",
+            "reddit",
+            "2026-08-30",
+            None,
+            None,
+        )
+        x_fm = render_frontmatter(
+            "T", "https://a.example", "https://c.example", "x", "2026-08-30", None, None
+        )
+        assert "hackernews-discussion: https://c.example" in hn_fm
+        assert "reddit-discussion: https://c.example" in reddit_fm
+        assert "discussion" not in x_fm
+
+    def test_tags_always_include_clippings(self):
+        fm = render_frontmatter(
+            "T",
+            "https://a.example",
+            "https://c.example",
+            "hn",
+            "2026-08-30",
+            None,
+            None,
+        )
+        assert "tags:" in fm
+        assert "  - clippings" in fm
 
 
 def test_write_index_groups_by_source(tmp_path):
