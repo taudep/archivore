@@ -528,4 +528,5 @@ def run(
     if cfg.smtp_host and cfg.email_to:
         _send_email(cfg, result)
 
-    _run_post_run_cmd(cfg)
+    if result.new_items:
+        _run_post_run_cmd(cfg)

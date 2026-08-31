@@ -77,8 +77,9 @@ def run(cfg, days_override, skip_embed) -> None:
 
     Scans since the saved watermark rather than a fixed schedule, appends a
     summary to the run log, and — if configured — sends a macOS notification
-    and/or email. Both are inert until configured, so this is safe to run
-    interactively or from cron without any extra setup.
+    and/or email, and runs a post-run shell command (``post_run_cmd``) when
+    the scrape produced new files. All are inert until configured, so this
+    is safe to run interactively or from cron without any extra setup.
     """
     from archivore.commands import run as cmd
 

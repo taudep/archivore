@@ -48,6 +48,35 @@ class TestQueueApiTokenEnvFallback:
         assert cfg.queue_api_token is None
 
 
+class TestPostRunCmdRestrictedToXdgConfig:
+    """post_run_cmd triggers shell execution, so it must only be settable
+    from the user's own XDG config file — never from a CWD-relative
+    archivore.yaml, which could belong to a cloned repo or synced folder."""
+
+    def test_not_applied_from_cwd_relative_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "archivore.yaml").write_text('post_run_cmd: "echo pwned"\n')
+
+        cfg = load_config()
+
+        assert cfg.post_run_cmd is None
+
+    def test_applied_from_xdg_config(self, tmp_path, monkeypatch):
+        xdg_home = tmp_path / "xdg-config"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+        monkeypatch.chdir(tmp_path)
+        config_dir = xdg_home / "archivore"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.yaml").write_text(
+            'post_run_cmd: "claude -p \\"/taude ingest\\""\n'
+        )
+
+        cfg = load_config()
+
+        assert cfg.post_run_cmd == 'claude -p "/taude ingest"'
+
+
 class TestConfigSummary:
     def test_redacts_unset_secrets_as_not_set(self):
         cfg = Config()

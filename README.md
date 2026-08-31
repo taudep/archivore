@@ -164,6 +164,14 @@ email_from: you@gmail.com   # defaults to smtp_user
 
 # Where the run log is written
 log_path: ~/Library/Logs/archivore/run.log
+
+# Optional: run a shell command after a successful scrape that produced new
+# files (e.g. to chain a wiki-ingest step). Not Claude-specific — any command
+# works. For security, this key is only honored in this XDG config file — a
+# CWD-relative archivore.yaml can never set it. Use an absolute path to the
+# binary: cron/launchd give the job a minimal PATH, so a bare `claude` likely
+# won't resolve.
+post_run_cmd: /Users/you/.local/bin/claude -p "/taude ingest"
 ```
 
 Since `smtp_password` is a credential, restrict the config file's permissions:

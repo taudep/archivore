@@ -1,6 +1,8 @@
 """Tests for the pure claim-partitioning logic in commands/run.py."""
 
+import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from archivore.commands.run import (
@@ -8,9 +10,10 @@ from archivore.commands.run import (
     discover_items,
     indexable_rows,
     partition_claims,
+    run,
 )
 from archivore.config import Config
-from archivore.models import HistoryRow
+from archivore.models import HistoryRow, RunResult
 
 
 def test_claimed_items_are_fetched():
@@ -114,11 +117,32 @@ class TestRunPostRunCmd:
         cfg = Config()
         cfg.post_run_cmd = 'claude -p "/taude ingest"'
         with patch("archivore.commands.run.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                cfg.post_run_cmd, 0, "", ""
+            )
             _run_post_run_cmd(cfg)
         mock_run.assert_called_once()
         args, kwargs = mock_run.call_args
         assert args[0] == 'claude -p "/taude ingest"'
         assert kwargs.get("shell") is True
+
+    def test_nonzero_returncode_is_logged_not_raised(self):
+        cfg = Config()
+        cfg.post_run_cmd = "false"
+        with patch("archivore.commands.run.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                cfg.post_run_cmd, 1, "", "boom"
+            )
+            _run_post_run_cmd(cfg)  # must not raise
+
+    def test_timeout_is_swallowed_not_raised(self):
+        cfg = Config()
+        cfg.post_run_cmd = "sleep 1000"
+        with patch(
+            "archivore.commands.run.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cfg.post_run_cmd, 600),
+        ):
+            _run_post_run_cmd(cfg)  # must not raise
 
     def test_failure_is_swallowed_not_raised(self):
         cfg = Config()
@@ -128,3 +152,44 @@ class TestRunPostRunCmd:
             side_effect=OSError("boom"),
         ):
             _run_post_run_cmd(cfg)  # must not raise
+
+
+class TestRunGatesPostRunCmd:
+    """The post-run hook is spec'd to fire only after a scrape that produced
+    new files, not on every run — a no-op run shouldn't shell out."""
+
+    def _run_result(self, new_items):
+        return RunResult(
+            new_queued=0,
+            done=0,
+            skipped=0,
+            failed=0,
+            retryable=0,
+            index_path=Path("/tmp/index.md"),
+            article_count=0,
+            new_items=new_items,
+        )
+
+    def test_called_when_run_produced_new_items(self, tmp_path):
+        cfg = Config()
+        cfg.log_path = tmp_path / "run.log"
+        cfg.notify_macos = False
+        result = self._run_result([{"source": "hn", "title": "t"}])
+        with (
+            patch("archivore.commands.run._pipeline", return_value=result),
+            patch("archivore.commands.run._run_post_run_cmd") as mock_hook,
+        ):
+            run(cfg)
+        mock_hook.assert_called_once_with(cfg)
+
+    def test_not_called_when_run_produced_no_new_items(self, tmp_path):
+        cfg = Config()
+        cfg.log_path = tmp_path / "run.log"
+        cfg.notify_macos = False
+        result = self._run_result([])
+        with (
+            patch("archivore.commands.run._pipeline", return_value=result),
+            patch("archivore.commands.run._run_post_run_cmd") as mock_hook,
+        ):
+            run(cfg)
+        mock_hook.assert_not_called()

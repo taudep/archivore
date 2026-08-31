@@ -6,6 +6,7 @@ Values are merged in order: built-in defaults, then
 """
 
 import os
+import sys
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -38,6 +39,12 @@ _SECRET_FIELDS = {"queue_api_token", "smtp_password"}
 # config files don't set it — lets it come from a secret manager / CI
 # environment instead of a file on disk.
 _QUEUE_API_TOKEN_ENV_VAR = "ARCHIVORE_QUEUE_API_TOKEN"
+
+# post_run_cmd shells out (see commands/run.py), so unlike every other field
+# it must only be settable from the user's own XDG config file — never from
+# a CWD-relative archivore.yaml, which could belong to a cloned repo or
+# synced folder someone else authored.
+_SHELL_FIELDS = {"post_run_cmd"}
 
 
 @dataclass
@@ -109,12 +116,21 @@ def load_config() -> Config:
     file on disk. A config file always wins over the environment variable.
     """
     cfg = Config()
+    xdg_path = xdg_config_path()
     for path in config_files():
         if not path.is_file():
             continue
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for f in fields(cfg):
             if f.name not in data:
+                continue
+            if f.name in _SHELL_FIELDS and path != xdg_path:
+                print(
+                    f"Warning: ignoring '{f.name}' set in {path} — it can "
+                    f"only be set in the user-level config ({xdg_path}), "
+                    "since it runs a shell command.",
+                    file=sys.stderr,
+                )
                 continue
             value = data[f.name]
             if f.name in _PATH_FIELDS:
