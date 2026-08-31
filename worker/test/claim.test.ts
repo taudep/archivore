@@ -114,10 +114,13 @@ describe("POST /claim", () => {
       `INSERT INTO queue (item_id, source, comments_url, status, retries, queued_at, updated_at)
        VALUES ('failed-1', 'hn', 'https://x', 'failed', 3, '2026-01-01', '2026-01-01')`
     ).run();
+    const freshTimestamp = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 minutes ago, well under the staleness threshold
     await env.DB.prepare(
       `INSERT INTO queue (item_id, source, comments_url, status, queued_at, updated_at)
-       VALUES ('pending-1', 'hn', 'https://x', 'pending', '2026-01-01', '2026-01-01')`
-    ).run();
+       VALUES ('pending-1', 'hn', 'https://x', 'pending', ?, ?)`
+    )
+      .bind(freshTimestamp, freshTimestamp)
+      .run();
 
     const { body } = await claim([
       { item_id: "new-1", source: "hn", comments_url: "https://y", article_url: null },
@@ -134,5 +137,60 @@ describe("POST /claim", () => {
       { item_id: "failed-1", claimed: false, status: "failed", retries: 3 },
       { item_id: "pending-1", claimed: false, status: "pending", retries: 0 },
     ]);
+  });
+
+  it("reclaims a stale pending item (updated more than the staleness threshold ago)", async () => {
+    const staleTimestamp = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2 hours ago
+    await env.DB.prepare(
+      `INSERT INTO queue (item_id, source, comments_url, status, queued_at, updated_at)
+       VALUES ('stale-1', 'hn', 'https://x', 'pending', ?, ?)`
+    )
+      .bind(staleTimestamp, staleTimestamp)
+      .run();
+
+    const { body } = await claim([
+      { item_id: "stale-1", source: "hn", comments_url: "https://x", article_url: null },
+    ]);
+
+    expect(body.results).toEqual([{ item_id: "stale-1", claimed: true, status: "pending", retries: 0 }]);
+  });
+
+  it("does NOT reclaim a fresh pending item (updated moments ago)", async () => {
+    const freshTimestamp = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 minutes ago
+    await env.DB.prepare(
+      `INSERT INTO queue (item_id, source, comments_url, status, queued_at, updated_at)
+       VALUES ('fresh-1', 'hn', 'https://x', 'pending', ?, ?)`
+    )
+      .bind(freshTimestamp, freshTimestamp)
+      .run();
+
+    const { body } = await claim([
+      { item_id: "fresh-1", source: "hn", comments_url: "https://x", article_url: null },
+    ]);
+
+    expect(body.results).toEqual([{ item_id: "fresh-1", claimed: false, status: "pending", retries: 0 }]);
+  });
+
+  it("does not touch retries when reclaiming a stale pending item", async () => {
+    const staleTimestamp = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2 hours ago
+    await env.DB.prepare(
+      `INSERT INTO queue (item_id, source, comments_url, status, retries, queued_at, updated_at)
+       VALUES ('stale-2', 'hn', 'https://x', 'pending', 0, ?, ?)`
+    )
+      .bind(staleTimestamp, staleTimestamp)
+      .run();
+
+    const { body } = await claim([
+      { item_id: "stale-2", source: "hn", comments_url: "https://x", article_url: null },
+    ]);
+
+    expect(body.results).toEqual([{ item_id: "stale-2", claimed: true, status: "pending", retries: 0 }]);
+
+    const { results: rows } = await env.DB.prepare(
+      "SELECT retries FROM queue WHERE item_id = ?"
+    )
+      .bind("stale-2")
+      .all();
+    expect((rows as { retries: number }[])[0].retries).toBe(0);
   });
 });

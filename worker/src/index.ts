@@ -2,6 +2,12 @@ import type { ClaimRequestItem, ClaimResultItem, CompleteRequestItem, Env } from
 
 type AuthResult = "ok" | "unauthorized" | "misconfigured";
 
+// A /claim batch is assumed to fully resolve (through /complete) within this
+// window. If concurrency/batch-size changes ever make legitimate runs
+// regularly exceed it, raise this value — a too-low threshold risks
+// reclaiming a still-in-flight item and causing duplicate fetch work.
+const STALE_PENDING_MINUTES = 60;
+
 function checkAuth(request: Request, env: Env): AuthResult {
   if (!env.QUEUE_API_TOKEN) {
     // Fail closed: an unset/empty secret must never be treated as a valid
@@ -36,15 +42,20 @@ async function handleClaim(request: Request, env: Env): Promise<Response> {
   }
 
   const now = new Date().toISOString();
+  const staleCutoff = new Date(Date.now() - STALE_PENDING_MINUTES * 60 * 1000).toISOString();
   const insertStmt = env.DB.prepare(
     `INSERT INTO queue (item_id, source, comments_url, article_url, status, queued_at, updated_at)
      VALUES (?, ?, ?, ?, 'pending', ?, ?)
-     ON CONFLICT (item_id) DO NOTHING
+     ON CONFLICT (item_id) DO UPDATE SET
+       updated_at = excluded.updated_at
+     WHERE queue.status = 'pending' AND queue.updated_at < ?
      RETURNING item_id`
   );
   const insertResults = await env.DB.batch(
     items.map((i) =>
-      insertStmt.bind(i.item_id, i.source, i.comments_url, i.article_url ?? null, now, now)
+      insertStmt.bind(
+        i.item_id, i.source, i.comments_url, i.article_url ?? null, now, now, staleCutoff
+      )
     )
   );
 
