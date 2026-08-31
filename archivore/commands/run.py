@@ -32,7 +32,7 @@ from rich.table import Table
 
 from archivore.clients import fetcher, hn, queue_api, reddit, x
 from archivore.clients.browsers import get_all_history
-from archivore.config import Config, save_last_run
+from archivore.config import Config, config_summary, save_last_run
 from archivore.models import (
     ClaimItem,
     ClaimResult,
@@ -334,6 +334,11 @@ def _pipeline(
     """
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     run_start = datetime.now(timezone.utc)
+
+    console.print("[bold]Config[/bold]")
+    for key, value in config_summary(cfg).items():
+        console.print(f"  {key} = {value}")
+    console.print()
 
     since, why = _resolve_since(cfg, days_override)
     console.print(f"[bold]Scanning browser history[/bold] ({why})…")

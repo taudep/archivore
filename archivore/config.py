@@ -32,6 +32,12 @@ DEFAULT_REDDIT_SUBREDDITS = {
 
 _PATH_FIELDS = {"db_path", "md_path", "output_dir", "log_path"}
 _SET_FIELDS = {"ignore_domains", "reddit_subreddits"}
+_SECRET_FIELDS = {"queue_api_token", "smtp_password"}
+
+# Environment variable fallback for queue_api_token, used only when the
+# config files don't set it — lets it come from a secret manager / CI
+# environment instead of a file on disk.
+_QUEUE_API_TOKEN_ENV_VAR = "ARCHIVORE_QUEUE_API_TOKEN"
 
 
 @dataclass
@@ -87,7 +93,13 @@ def config_files() -> list[Path]:
 
 
 def load_config() -> Config:
-    """Load configuration, applying overrides from any config files found."""
+    """Load configuration, applying overrides from any config files found.
+
+    ``queue_api_token`` additionally falls back to the
+    ``ARCHIVORE_QUEUE_API_TOKEN`` environment variable if no config file sets
+    it, so it can come from a secret manager / CI environment instead of a
+    file on disk. A config file always wins over the environment variable.
+    """
     cfg = Config()
     for path in config_files():
         if not path.is_file():
@@ -102,7 +114,31 @@ def load_config() -> Config:
             elif f.name in _SET_FIELDS:
                 value = set(value)
             setattr(cfg, f.name, value)
+    if cfg.queue_api_token is None:
+        cfg.queue_api_token = os.environ.get(_QUEUE_API_TOKEN_ENV_VAR)
     return cfg
+
+
+def config_summary(cfg: Config) -> dict[str, str]:
+    """Return a loggable view of every config field, redacting secrets.
+
+    Secret fields (``queue_api_token``, ``smtp_password``) never appear in
+    full — only whether they're set, plus the last 4 characters as a sanity
+    check that the intended value is active.
+    """
+    summary: dict[str, str] = {}
+    for f in fields(cfg):
+        value = getattr(cfg, f.name)
+        if f.name in _SECRET_FIELDS:
+            if value is None:
+                summary[f.name] = "<not set>"
+            elif len(value) >= 4:
+                summary[f.name] = f"<set: ...{value[-4:]}>"
+            else:
+                summary[f.name] = "<set>"
+        else:
+            summary[f.name] = str(value)
+    return summary
 
 
 def save_last_run(timestamp: str) -> None:

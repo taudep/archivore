@@ -58,12 +58,18 @@ See [Automation (cron)](#automation-cron) below for scheduling and notification 
 uv sync --extra firefox    # firefox extra adds lz4 session decoding
 ```
 
-`archivore run` requires a running [archivore-queue](#multi-machine-sync-archivore-queue) instance — there's no offline fallback, so set `queue_api_url` and `queue_api_token` before your first run (see [Multi-machine sync](#multi-machine-sync-archivore-queue) for what these point at):
+`archivore run` requires a running [archivore-queue](#multi-machine-sync-archivore-queue) instance — there's no offline fallback, so set `queue_api_url` and `queue_api_token` before your first run (see [Multi-machine sync](#multi-machine-sync-archivore-queue) for what these point at, and [`worker/README.md`](worker/README.md) if you're standing up your own instance):
 
 ```yaml
 queue_api_url: https://archivore-queue.taude.workers.dev
 queue_api_token: "your token here"
 ```
+
+`queue_api_token` can also come from the `ARCHIVORE_QUEUE_API_TOKEN` environment variable instead
+of the config file — useful if you'd rather keep it in a secret manager or CI environment. A value
+in `config.yaml` always wins over the environment variable if both are set. Every run prints the
+full resolved config to the console at startup (secrets redacted to their last 4 characters) so
+it's easy to confirm which value actually took effect.
 
 For semantic search over captured articles, install [qmd](https://github.com/tobi/qmd):
 
@@ -165,30 +171,29 @@ intentional, not a naming mismatch.
 call covers every item a run needs, never one call per item):
 
 - `POST /claim` — claim a batch of item_ids. Atomic per-row via the `item_id` primary key plus
-  `INSERT ... ON CONFLICT DO NOTHING RETURNING`, so two machines racing to claim the same item
-  can never both win.
+  `INSERT ... ON CONFLICT ... RETURNING`, so two machines racing to claim the same item can never
+  both win. Jobs are idempotent: a `pending` row left untouched for over an hour (an orphan from a
+  crashed run) is atomically reclaimed on the next `/claim`, so a crash self-heals without manual
+  intervention.
 - `POST /complete` — report a batch of outcomes (`done` / `failed` / `skipped`) after fetching.
 - `GET /items` — list the full queue (optionally `?since=<timestamp>`), used to rebuild the
   index from global state rather than just what one machine fetched.
 
-**Redeploying or standing up your own instance** (e.g. a fresh Cloudflare account): see
-[docs/superpowers/plans/2026-08-30-archivore-queue-worker.md](docs/superpowers/plans/2026-08-30-archivore-queue-worker.md)
-for the full walkthrough — `wrangler login`, `wrangler d1 create`, migrations, `wrangler secret
-put QUEUE_API_TOKEN`, `wrangler deploy`. Local development and tests:
+**Setup, redeployment, and operations:** see [`worker/README.md`](worker/README.md) for the
+complete walkthrough — prerequisites, first-time setup (`wrangler login`, `wrangler d1 create`,
+migrations, generating and setting `QUEUE_API_TOKEN`, `wrangler deploy`, verifying against the
+live database), local development and tests, schema changes, and a detailed writeup of the
+`[vars]`-vs-secret gotcha that once caused a real production outage (a code deploy silently wiped
+the live token). The historical [Worker implementation
+plan](docs/superpowers/plans/2026-08-30-archivore-queue-worker.md) documents how it was originally
+built, task by task, but `worker/README.md` is the source of truth for actually operating it.
 
 ```bash
 cd worker
 npm install
-npm test              # 32 tests, vitest + @cloudflare/vitest-pool-workers
+npm test              # 35 tests, vitest + @cloudflare/vitest-pool-workers
 npx tsc --noEmit       # type-check
 ```
-
-`QUEUE_API_TOKEN` for local test runs is a fixed value defined in `worker/vitest.config.ts`'s
-Miniflare bindings — it is deliberately **not** in `worker/wrangler.toml`, since that file also
-drives real deploys, and an earlier version of this project accidentally leaked a plaintext test
-token to production that way (`wrangler deploy` syncs `wrangler.toml`'s `[vars]` on every deploy,
-silently overwriting a real secret set via `wrangler secret put`). The real secret only ever lives
-in Cloudflare's encrypted secret store.
 
 ## Roadmap
 
