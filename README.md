@@ -2,6 +2,32 @@
 
 _A personal web-reading capture system and AI second brain._
 
+## Quick install (new machine)
+
+Already have an [archivore-queue](#multi-machine-sync-archivore-queue) Worker+D1 instance running somewhere? Get a new machine reading from that same shared queue in a few commands:
+
+```bash
+git clone https://github.com/taudep/archivore.git && cd archivore
+uv sync --extra firefox    # firefox extra adds lz4 session decoding
+uv tool install .          # puts `archivore` on your PATH
+```
+
+Then create `~/.config/archivore/config.yaml` with the shared queue's credentials and your vault path:
+
+```yaml
+queue_api_url: https://archivore-queue.taude.workers.dev
+queue_api_token: "your token here"
+output_dir: ~/Library/Mobile Documents/com~apple~CloudDocs/Todd's Obsidian Vault/Archivore/Raw
+```
+
+```bash
+archivore run
+```
+
+That's the whole client setup — this machine now dedups against every other machine pointed at the same `queue_api_url`. `output_dir` should point at the same synced location (iCloud, Dropbox, etc.) every machine shares, so they all read/write the same vault.
+
+Don't have a Worker+D1 instance yet? See [Multi-machine sync](#multi-machine-sync-archivore-queue) further down — that's the one-time infrastructure setup, done once total, not per machine. For config details, `qmd` semantic search, and an env-var alternative to the token, see [Setup](#setup) below.
+
 ## Vision
 
 Everything you read online gets captured, converted to Markdown, and fed into a local knowledge base. An AI agent then synthesizes that knowledge into publishable long-form articles and social posts, publishing a few pieces per week and engaging with the communities where the ideas live. The goal is a Karpathy-style wiki that grows with you — passive ingestion, active output.
