@@ -120,6 +120,7 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
        title = COALESCE(?, title),
        is_selfpost = COALESCE(?, is_selfpost),
        filename = COALESCE(?, filename),
+       article_url = COALESCE(?, article_url),
        last_error = ?,
        updated_at = ?,
        retries = retries + 1
@@ -132,6 +133,7 @@ async function handleComplete(request: Request, env: Env): Promise<Response> {
         i.title ?? null,
         i.is_selfpost === null || i.is_selfpost === undefined ? null : i.is_selfpost ? 1 : 0,
         i.filename ?? null,
+        i.article_url ?? null,
         i.last_error ?? null,
         now,
         i.item_id

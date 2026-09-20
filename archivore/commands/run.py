@@ -199,6 +199,7 @@ def phase1_resolve(
                         is_selfpost=None,
                         filename=None,
                         last_error=reason,
+                        article_url=None,
                     )
                 )
                 continue
@@ -227,6 +228,7 @@ def phase1_resolve(
                         is_selfpost=True,
                         filename=filename,
                         last_error=None,
+                        article_url=item.article_url,
                     )
                 )
             else:
@@ -252,6 +254,7 @@ def phase1_resolve(
                     is_selfpost=None,
                     filename=None,
                     last_error=str(e),
+                    article_url=None,
                 )
             )
 

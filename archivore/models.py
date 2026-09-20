@@ -96,3 +96,4 @@ class CompleteItem(TypedDict):
     is_selfpost: bool | None
     filename: str | None
     last_error: str | None
+    article_url: str | None

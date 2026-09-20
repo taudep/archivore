@@ -41,6 +41,37 @@ describe("POST /complete", () => {
     expect(row?.is_selfpost).toBe(0);
   });
 
+  it("fills in article_url when the item was claimed with none (HN/Reddit resolve-later case)", async () => {
+    await seed("1"); // seed() leaves article_url unset -> NULL, as claim() does for hn/reddit
+    await complete([
+      {
+        item_id: "1",
+        status: "done",
+        title: "My Title",
+        is_selfpost: false,
+        filename: "1-my-title.md",
+        last_error: null,
+        article_url: "https://example.com/the-article",
+      },
+    ]);
+
+    const row = await env.DB.prepare("SELECT * FROM queue WHERE item_id = '1'").first();
+    expect(row?.article_url).toBe("https://example.com/the-article");
+  });
+
+  it("leaves article_url untouched when completing without one", async () => {
+    await env.DB.prepare(
+      `INSERT INTO queue (item_id, source, comments_url, article_url, status, queued_at, updated_at)
+       VALUES ('1', 'hn', 'https://x', 'https://already-set', 'pending', '2026-01-01', '2026-01-01')`
+    ).run();
+    await complete([
+      { item_id: "1", status: "failed", title: null, is_selfpost: null, filename: null, last_error: "HTTP 500", article_url: null },
+    ]);
+
+    const row = await env.DB.prepare("SELECT * FROM queue WHERE item_id = '1'").first();
+    expect(row?.article_url).toBe("https://already-set");
+  });
+
   it("marks an item failed and increments retries", async () => {
     await seed("1");
     await complete([{ item_id: "1", status: "failed", title: null, is_selfpost: null, filename: null, last_error: "HTTP 500" }]);

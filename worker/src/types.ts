@@ -53,4 +53,5 @@ export interface CompleteRequestItem {
   is_selfpost: boolean | null;
   filename: string | null;
   last_error: string | null;
+  article_url: string | null;
 }

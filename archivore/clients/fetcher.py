@@ -75,6 +75,7 @@ async def fetch_article(
             is_selfpost=False,
             filename=filename,
             last_error=error,
+            article_url=article_url,
         )
 
     last_err: Exception | None = None
@@ -132,6 +133,7 @@ async def fetch_article(
                     is_selfpost=False,
                     filename=filename,
                     last_error=None,
+                    article_url=article_url,
                 )
 
         except (aiohttp.ClientError, asyncio.TimeoutError, ssl.SSLError) as e:
@@ -147,4 +149,5 @@ async def fetch_article(
         is_selfpost=False,
         filename=None,
         last_error=str(last_err),
+        article_url=article_url,
     )

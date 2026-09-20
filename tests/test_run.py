@@ -10,10 +10,11 @@ from archivore.commands.run import (
     discover_items,
     indexable_rows,
     partition_claims,
+    phase1_resolve,
     run,
 )
 from archivore.config import Config
-from archivore.models import HistoryRow, RunResult
+from archivore.models import ClaimItem, HistoryRow, ResolvedItem, RunResult
 
 
 def test_claimed_items_are_fetched():
@@ -104,6 +105,85 @@ class TestDiscoverItemsRedditToggle:
         assert len(items) == 1
         assert items[0]["source"] == "reddit"
         assert visited_at["abc123"] == "2026-08-30T12:00:00+00:00"
+
+
+class TestPhase1ResolveArticleUrl:
+    """Regression coverage: CompleteItem must carry the resolved
+    article_url. It previously didn't, so the /complete API call never
+    updated D1's article_url column, leaving it permanently NULL for
+    every HN/Reddit item (set to NULL at /claim time, since the real URL
+    isn't known until resolve() runs here in phase 1)."""
+
+    def _cfg(self, tmp_path):
+        cfg = Config()
+        cfg.output_dir = tmp_path
+        cfg.hn_delay = 0
+        return cfg
+
+    def test_self_post_completion_includes_resolved_article_url(self, tmp_path):
+        claim_item = ClaimItem(
+            item_id="1",
+            source="hn",
+            comments_url="https://news.ycombinator.com/item?id=1",
+            article_url=None,
+        )
+        resolved = ResolvedItem(
+            title="Ask HN: something",
+            article_url="https://news.ycombinator.com/item?id=1",
+            is_selfpost=True,
+            selftext="body",
+        )
+        with (
+            patch("archivore.commands.run.hn.resolve", return_value=resolved),
+            patch("archivore.commands.run.write_article_file", return_value="1.md"),
+        ):
+            completions, to_download = phase1_resolve(
+                [claim_item], self._cfg(tmp_path), {"1": "2026-01-01T00:00:00+00:00"}
+            )
+
+        assert to_download == []
+        assert len(completions) == 1
+        assert completions[0]["article_url"] == "https://news.ycombinator.com/item?id=1"
+
+    def test_link_post_carries_article_url_into_to_download(self, tmp_path):
+        claim_item = ClaimItem(
+            item_id="2",
+            source="hn",
+            comments_url="https://news.ycombinator.com/item?id=2",
+            article_url=None,
+        )
+        resolved = ResolvedItem(
+            title="A link post",
+            article_url="https://example.com/article",
+            is_selfpost=False,
+        )
+        with patch("archivore.commands.run.hn.resolve", return_value=resolved):
+            completions, to_download = phase1_resolve(
+                [claim_item], self._cfg(tmp_path), {"2": "2026-01-01T00:00:00+00:00"}
+            )
+
+        assert completions == []
+        assert len(to_download) == 1
+        assert to_download[0]["article_url"] == "https://example.com/article"
+
+    def test_resolve_failure_reports_no_article_url(self, tmp_path):
+        claim_item = ClaimItem(
+            item_id="3",
+            source="hn",
+            comments_url="https://news.ycombinator.com/item?id=3",
+            article_url=None,
+        )
+        with patch(
+            "archivore.commands.run.hn.resolve", side_effect=RuntimeError("boom")
+        ):
+            completions, to_download = phase1_resolve(
+                [claim_item], self._cfg(tmp_path), {"3": "2026-01-01T00:00:00+00:00"}
+            )
+
+        assert to_download == []
+        assert len(completions) == 1
+        assert completions[0]["status"] == "failed"
+        assert completions[0]["article_url"] is None
 
 
 class TestRunPostRunCmd:
