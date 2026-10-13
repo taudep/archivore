@@ -177,6 +177,10 @@ post_run_cmd: /Users/you/.local/bin/claude -p "/taude ingest"
 Since `smtp_password` is a credential, restrict the config file's permissions:
 `chmod 600 ~/.config/archivore/config.yaml`.
 
+On a multi-machine setup, one designated machine can go further and chain the wiki ingest, an
+auto-published newsletter, and a combined report email into a single Monday-morning job — see
+[docs/weekly-pipeline.md](docs/weekly-pipeline.md).
+
 ## Multi-machine sync (archivore-queue)
 
 If you run archivore on more than one machine, the same article used to get fetched twice — once
