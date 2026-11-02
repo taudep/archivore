@@ -19,3 +19,7 @@ hn_this_week/
 tabs.db
 tabs.md
 .worktrees/
+
+# Tool state
+.wrangler/
+.claude-resume
