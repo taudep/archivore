@@ -54,7 +54,8 @@ Snapshots your open tabs and 90 days of browser history (Chrome + Firefox) into 
 
 ```
 ~/tabs.db          — SQLite with tabs + domain history tables
-~/tabs.md          — optional Markdown export
+~/YYYY-MM-DD-tabs.md — optional Markdown export (bare --markdown;
+                       set md_path to change the folder/name)
 ```
 
 ### `archivore run`
@@ -110,8 +111,9 @@ qmd embed
 ## Usage
 
 ```bash
-# Snapshot current tabs + 90-day history → ~/tabs.db and ~/tabs.md
-uv run archivore snapshot --markdown ~/tabs.md
+# Snapshot current tabs + 90-day history → ~/tabs.db and a dated
+# Markdown file (e.g. ~/2026-11-02-tabs.md); pass a path to pick your own
+uv run archivore snapshot --markdown
 
 # Fetch reading since the last run (HN, Reddit, X) → output_dir
 uv run archivore run

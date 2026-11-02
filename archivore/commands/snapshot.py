@@ -1,5 +1,6 @@
 """Snapshot command: capture open tabs and history to SQLite / Markdown."""
 
+from datetime import date
 from pathlib import Path
 
 import click
@@ -16,6 +17,12 @@ from archivore.render import write_snapshot_markdown
 from archivore.repository.snapshot import save_snapshot
 from archivore.sources import dedupe_by_domain
 from archivore.timeutil import days_ago
+
+
+def dated_markdown_path(path: Path, today: date | None = None) -> Path:
+    """Prefix the filename with today's date so snapshots don't overwrite."""
+    today = today or date.today()
+    return path.with_name(f"{today.isoformat()}-{path.name}")
 
 
 def run(

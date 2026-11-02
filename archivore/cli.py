@@ -32,7 +32,7 @@ def cli(ctx: click.Context) -> None:
     is_flag=False,
     flag_value="__default__",
     default=None,
-    help="Write a Markdown snapshot (default path: ~/tabs.md).",
+    help="Write a Markdown snapshot (default: md_path, date-prefixed).",
 )
 @click.option(
     "--days",
@@ -47,7 +47,7 @@ def snapshot(cfg, db_path, no_db, markdown_path, days) -> None:
     from archivore.commands import snapshot as cmd
 
     if markdown_path == Path("__default__"):
-        markdown_path = cfg.md_path
+        markdown_path = cmd.dated_markdown_path(cfg.md_path)
     cmd.run(
         cfg,
         db_path=None if no_db else (db_path or cfg.db_path),
