@@ -26,7 +26,7 @@ archivore run
 
 That's the whole client setup — this machine now dedups against every other machine pointed at the same `queue_api_url`. `output_dir` should point at the same synced location (iCloud, Dropbox, etc.) every machine shares, so they all read/write the same vault.
 
-Don't have a Worker+D1 instance yet? See [Multi-machine sync](#multi-machine-sync-archivore-queue) further down — that's the one-time infrastructure setup, done once total, not per machine. For config details, `qmd` semantic search, and an env-var alternative to the token, see [Setup](#setup) below.
+Don't have a Worker+D1 instance yet? See [Multi-machine sync](#multi-machine-sync-archivore-queue) further down — that's the one-time infrastructure setup, done once total, not per machine. For config details, `qmd` semantic search, and an env-var alternative to the token, see [Setup](#setup) below. For the fuller walkthrough of this same setup — verifying the shared vault is actually syncing first, cron scheduling, a sanity-check checklist — see [docs/satellite-machine-setup.md](docs/satellite-machine-setup.md).
 
 ## Vision
 
@@ -179,7 +179,9 @@ Since `smtp_password` is a credential, restrict the config file's permissions:
 
 On a multi-machine setup, one designated machine can go further and chain the wiki ingest, an
 auto-published newsletter, and a combined report email into a single Monday-morning job — see
-[docs/weekly-pipeline.md](docs/weekly-pipeline.md).
+[docs/weekly-pipeline.md](docs/weekly-pipeline.md). Every other machine stays a plain capture
+satellite — see [docs/satellite-machine-setup.md](docs/satellite-machine-setup.md) for setting
+one up.
 
 ## Multi-machine sync (archivore-queue)
 
