@@ -70,7 +70,7 @@ it's equally safe to run by hand or schedule from cron.
 
 ```
 Todd's Obsidian Vault/Archivore/Raw/   — default output_dir (an iCloud-synced Obsidian vault)
-  index.md         — linked table of contents (HN / Reddit / X sections)
+  index.md         — linked table of contents (HN / Reddit / X / manual sections)
   *.md             — one file per article
 ~/Library/Logs/archivore/run.log   — append-only summary of every run (default; see log_path)
 ```
@@ -78,6 +78,20 @@ Todd's Obsidian Vault/Archivore/Raw/   — default output_dir (an iCloud-synced 
 The default `output_dir` is `~/Library/Mobile Documents/com~apple~CloudDocs/Todd's Obsidian Vault/Archivore/Raw` — fully overridable via `output_dir` in config, same as any other `Config` field.
 
 See [Automation (cron)](#automation-cron) below for scheduling and notification setup.
+
+### `archivore save`
+
+Saves one URL right now — any page, not just HN/Reddit/X from history — through the same claim → fetch → complete path as `run`, so it gets the same multi-machine dedupe. Built for scripts such as a browser-hotkey helper.
+
+```bash
+archivore save URL [--title TEXT] [--note TEXT] [--json]
+```
+
+- The queue `item_id` is `m_` + the first 16 hex chars of the SHA-1 of the normalized URL (lowercased scheme/host, no fragment, no `utm_*`/`fbclid`/`gclid`, no trailing slash), so trivially different links to the same page dedupe.
+- The article lands in `output_dir` like any other, with `via: manual`, `visited_at` and — if given — `note:` in its front matter. Without `--title`, the page's own title (or else the URL) is used.
+- It doesn't rewrite `index.md`, run `qmd embed` or move the last-run watermark; the next `archivore run` does those.
+- `--json` prints exactly one line on stdout — `{"status": "saved"|"duplicate"|"failed", "item_id": ..., "filename": ...|null, "error": ...|null}` — with any progress on stderr.
+- Exit codes: `0` saved or duplicate (already done/skipped, or in progress on another machine), `1` failed (network, fetch or queue error — safe to retry), `2` usage error. A page that answers with a permanent error (e.g. HTTP 404) or non-HTML content is still `saved`, as a stub holding the URL and note, with the reason in `error`.
 
 ## Setup
 
@@ -117,6 +131,9 @@ uv run archivore snapshot --markdown
 
 # Fetch reading since the last run (HN, Reddit, X) → output_dir
 uv run archivore run
+
+# Save a single page now, with an optional note
+uv run archivore save https://example.com/post --note "read for the caching bit"
 
 # Search the knowledge base
 qmd query "postgres performance"

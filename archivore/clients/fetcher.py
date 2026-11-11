@@ -16,6 +16,7 @@ from archivore.clients.http import (
     aiohttp_ssl_ctx,
     extract_page_author,
     extract_page_published,
+    extract_page_title,
 )
 from archivore.models import CompleteItem
 from archivore.render import html_to_markdown, write_article_file
@@ -41,6 +42,10 @@ async def fetch_article(
     visited_at, and optionally author/published (a self-post fallback from
     resolve() — always None here in practice, since phase 2 only handles
     link posts).
+
+    For ``archivore save``, ``title`` may be ``None`` — it then falls back to
+    the page's own title, else the URL — and an optional ``note`` key carries
+    the user's note into the front matter.
     """
     item_id = item["item_id"]
     title = item["title"]
@@ -50,28 +55,30 @@ async def fetch_article(
     visited_at = item["visited_at"]
     resolved_author = item.get("author")
     resolved_published = item.get("published")
+    user_note = item.get("note")
 
     state[item_id] = ("⏳", "fetching…")
 
-    def _skip(note: str, error: str, icon_status: str) -> CompleteItem:
+    def _skip(fetch_note: str, error: str, icon_status: str) -> CompleteItem:
         filename = write_article_file(
             output_dir,
             item_id,
-            title,
+            title or article_url,
             article_url,
             comments_url,
-            note,
+            fetch_note,
             "",
             source=source,
             visited_at=visited_at,
             author=resolved_author,
             published=resolved_published,
+            note=user_note,
         )
         state[item_id] = ("⛔", icon_status)
         return CompleteItem(
             item_id=item_id,
             status="skipped",
-            title=title,
+            title=title or article_url,
             is_selfpost=False,
             filename=filename,
             last_error=error,
@@ -112,6 +119,7 @@ async def fetch_article(
 
                 page = await resp.text(errors="replace")
                 md_body = html_to_markdown(page)
+                title = title or extract_page_title(page) or article_url
                 filename = write_article_file(
                     output_dir,
                     item_id,
@@ -124,6 +132,7 @@ async def fetch_article(
                     visited_at=visited_at,
                     author=extract_page_author(page) or resolved_author,
                     published=extract_page_published(page) or resolved_published,
+                    note=user_note,
                 )
                 state[item_id] = ("✅", "saved")
                 return CompleteItem(
