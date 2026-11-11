@@ -13,7 +13,11 @@ SOURCE_LABELS = {
     "hn": "Hacker News",
     "reddit": "Reddit",
     "x": "X / Twitter",
+    "manual": "Saved manually",
 }
+
+# Items saved one-off via `archivore save` rather than found in history.
+MANUAL_SOURCE = "manual"
 
 # Key for the discussion-thread link in front matter, per source. X has no
 # separate discussion page — the tweet URL already is the "source" — so it's
@@ -30,6 +34,15 @@ def _yaml_str(value: str) -> str:
     return f'"{escaped}"'
 
 
+def _yaml_multiline_str(value: str) -> str:
+    """Like ``_yaml_str`` but also escapes line breaks and tabs, for
+    free-form user text (a note) that may span several lines."""
+    quoted = _yaml_str(value)
+    return (
+        quoted.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+    )
+
+
 def render_frontmatter(
     title: str,
     item_id: str,
@@ -39,6 +52,7 @@ def render_frontmatter(
     visited_at: str,
     author: str | None,
     published: str | None,
+    note: str | None = None,
 ) -> str:
     """Build an Obsidian-clipper-style YAML front matter block.
 
@@ -50,6 +64,12 @@ def render_frontmatter(
     ``item_id`` lives here (as ``id``) rather than in the filename, since
     filenames are now ``<timestamp>-<title>.md`` for readability and
     chronological sorting on disk.
+
+    ``source`` (the key) stays the article URL for every item, matching the
+    Obsidian clipper convention downstream tools read. Manual saves
+    (``archivore save``) are marked with ``via: manual`` plus the exact
+    ``visited_at`` timestamp instead. ``note`` is the user's free-text note,
+    written as ``note:`` only when given.
     """
     authors = [a.strip() for a in author.split(",") if a.strip()] if author else []
     lines = [
@@ -67,6 +87,10 @@ def render_frontmatter(
         "tags:",
         "  - clippings",
     ]
+    if source == MANUAL_SOURCE:
+        lines += [f"via: {MANUAL_SOURCE}", f"visited_at: {_yaml_str(visited_at)}"]
+    if note:
+        lines.append(f"note: {_yaml_multiline_str(note)}")
     discussion_key = _DISCUSSION_KEYS.get(source)
     if discussion_key:
         lines.append(f"{discussion_key}: {comments_url}")
@@ -143,9 +167,15 @@ def write_article_file(
     visited_at: str,
     author: str | None = None,
     published: str | None = None,
+    note: str | None = None,
 ) -> str:
     """Write one article file, with Obsidian-clipper-style YAML front
-    matter, and return its filename."""
+    matter, and return its filename.
+
+    ``fetch_note`` is archivore's own status text for the body (e.g.
+    "Article unavailable"); ``note`` is the user's note from
+    ``archivore save --note``, written to front matter.
+    """
     lines = [
         render_frontmatter(
             title,
@@ -156,14 +186,17 @@ def write_article_file(
             visited_at,
             author,
             published,
+            note,
         ),
         "",
         f"# {title}",
         "",
         f"- **Article:** [{article_url}]({article_url})",
-        f"- **Comments:** [{comments_url}]({comments_url})",
-        "",
     ]
+    # A manual save has no discussion thread — comments_url is the page itself
+    if source != MANUAL_SOURCE:
+        lines.append(f"- **Comments:** [{comments_url}]({comments_url})")
+    lines.append("")
     if fetch_note:
         lines += [fetch_note.strip(), ""]
     if md_body:
@@ -258,16 +291,17 @@ def write_index(
         "",
     ]
 
-    for source in ("hn", "reddit", "x"):
+    for source in ("hn", "reddit", "x", MANUAL_SOURCE):
         entries = by_source.get(source, [])
         if not entries:
             continue
         lines += [f"## {SOURCE_LABELS[source]} ({len(entries)})", ""]
+        link_label = "source" if source == MANUAL_SOURCE else "comments"
         for e in entries:
             tag = " _(self-post)_" if e["is_selfpost"] else ""
             lines.append(
                 f"- [{e['title']}]({e['filename']}){tag}"
-                f" — [comments]({e['comments_url']})"
+                f" — [{link_label}]({e['comments_url']})"
             )
         lines.append("")
 

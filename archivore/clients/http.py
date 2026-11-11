@@ -103,3 +103,19 @@ def extract_page_published(html_text: str) -> str | None:
         if value:
             return value
     return None
+
+
+_TITLE_TAG_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+
+
+def extract_page_title(html_text: str) -> str | None:
+    """Best-effort title for an arbitrary page: ``og:title``/``twitter:title``
+    first (usually free of the "| Site Name" suffix), then ``<title>``."""
+    value = extract_og(html_text, "title")
+    if value:
+        return value
+    m = _TITLE_TAG_RE.search(html_text)
+    if m:
+        title = " ".join(html.unescape(m.group(1)).split())
+        return title or None
+    return None

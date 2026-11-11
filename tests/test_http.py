@@ -5,6 +5,7 @@ from archivore.clients.http import (
     extract_og,
     extract_page_author,
     extract_page_published,
+    extract_page_title,
 )
 
 
@@ -62,3 +63,17 @@ class TestExtractPagePublished:
 
     def test_none_when_nothing_present(self):
         assert extract_page_published("<html></html>") is None
+
+
+def test_extract_page_title_prefers_og_title():
+    html = '<title>Site | Page</title><meta property="og:title" content="Page">'
+    assert extract_page_title(html) == "Page"
+
+
+def test_extract_page_title_falls_back_to_title_tag():
+    html = "<html><head><title>\n  A &amp; B  </title></head></html>"
+    assert extract_page_title(html) == "A & B"
+
+
+def test_extract_page_title_none_when_missing():
+    assert extract_page_title("<html><body>no title</body></html>") is None

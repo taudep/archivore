@@ -283,3 +283,79 @@ def test_write_index_groups_by_source(tmp_path):
     assert "## Hacker News (1)" in content
     assert "## X / Twitter (1)" in content
     assert "_(self-post)_" in content
+
+
+class TestManualSaveRendering:
+    """`archivore save` items: source "manual", optional user note."""
+
+    def _write(self, tmp_path, **kwargs):
+        filename = write_article_file(
+            tmp_path,
+            "m_0123456789abcdef",
+            "Saved Page",
+            "https://a.example/page",
+            "https://a.example/page",
+            "",
+            "body",
+            source="manual",
+            visited_at="2026-11-11T10:20:30+00:00",
+            **kwargs,
+        )
+        return (tmp_path / filename).read_text()
+
+    def test_manual_frontmatter_keeps_url_source_and_adds_via(self, tmp_path):
+        content = self._write(tmp_path)
+        assert 'source: "https://a.example/page"' in content
+        assert "via: manual" in content
+        assert 'visited_at: "2026-11-11T10:20:30+00:00"' in content
+        assert "created: 2026-11-11" in content
+        assert "discussion" not in content
+
+    def test_note_is_written_as_quoted_yaml(self, tmp_path):
+        content = self._write(tmp_path, note='line one\nsays "hi"')
+        fm = content.split("---")[1]
+        assert 'note: "line one\\nsays \\"hi\\""' in fm
+
+    def test_no_note_key_without_note(self, tmp_path):
+        assert "note:" not in self._write(tmp_path)
+
+    def test_manual_body_omits_redundant_comments_link(self, tmp_path):
+        content = self._write(tmp_path)
+        assert "- **Article:** [https://a.example/page]" in content
+        assert "**Comments:**" not in content
+
+    def test_existing_sources_unchanged(self, tmp_path):
+        filename = write_article_file(
+            tmp_path,
+            "1",
+            "T",
+            "https://a.example",
+            "https://c.example",
+            "",
+            "body",
+            source="hn",
+            visited_at="2026-08-30T12:00:00+00:00",
+        )
+        content = (tmp_path / filename).read_text()
+        assert "via:" not in content
+        assert "visited_at:" not in content
+        assert "note:" not in content
+        assert "**Comments:**" in content
+
+
+def test_write_index_includes_manual_saves(tmp_path):
+    rows = [
+        {
+            "source": "manual",
+            "title": "Saved Page",
+            "filename": "20261111-Saved Page.md",
+            "comments_url": "https://a.example/page",
+            "is_selfpost": 0,
+        }
+    ]
+    until = datetime.now(timezone.utc)
+    index_path, n = write_index(tmp_path, rows, until - timedelta(days=7), until)
+    content = index_path.read_text()
+    assert n == 1
+    assert "## Saved manually (1)" in content
+    assert "[Saved Page]" in content
