@@ -86,5 +86,55 @@ def run(cfg, days_override, skip_embed) -> None:
     cmd.run(cfg, days_override=days_override, skip_embed=skip_embed)
 
 
+def _http_url(ctx: click.Context, param: click.Parameter, value: str) -> str:
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(value.strip())
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        raise click.BadParameter("must be an http(s) URL")
+    return value.strip()
+
+
+@cli.command()
+@click.argument("url", callback=_http_url)
+@click.option("--title", default=None, help="Title to use instead of the page's.")
+@click.option("--note", default=None, help="Note to store in the front matter.")
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Print exactly one JSON result line on stdout (for scripts).",
+)
+@click.pass_obj
+def save(cfg, url, title, note, as_json) -> None:
+    """Save one URL to the vault now, with multi-machine dedupe.
+
+    Exit codes: 0 saved or duplicate, 1 failed (safe to retry), 2 usage
+    error. Leaves the index and qmd embed to the next `archivore run`.
+    """
+    import json
+
+    from rich.console import Console
+
+    from archivore.commands import save as cmd
+
+    # In --json mode stdout carries only the result line; progress → stderr.
+    console = Console(stderr=as_json)
+    result = cmd.save(cfg, url, title=title, note=note, console=console)
+
+    if as_json:
+        click.echo(json.dumps(result.to_dict()))
+    elif result.status == "saved":
+        console.print(f"[green]Saved[/green] → [cyan]{result.filename}[/cyan]")
+        if result.error:
+            console.print(f"[yellow]Note: page not fetched ({result.error})[/yellow]")
+    elif result.status == "duplicate":
+        console.print(f"[yellow]Duplicate[/yellow] — {result.item_id} already handled")
+    else:
+        console.print(f"[red]Failed[/red]: {result.error}")
+
+    raise SystemExit(0 if result.status in ("saved", "duplicate") else 1)
+
+
 if __name__ == "__main__":
     cli()
